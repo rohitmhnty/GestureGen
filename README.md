@@ -4,7 +4,7 @@
 # 📝 Release Plans
 
 - [x] Inference Code
-- [ ] Pretrained Models
+- [x] Pretrained Models
 - [ ] A web demo
 - [ ] Training Code
 
@@ -21,7 +21,10 @@ bash demo/install_mfa.sh
 
 ## Download Model
 ```
-gdown https://drive.google.com/drive/folders/1tGTB40jF7v0RBXYU-VGRDsDOZp__Gd0_?usp=drive_link -O ./ckpt --folder
+# Download the pretrained model (Shortcut) + (Diffusion) + (RVQ-VAEs)
+gdown https://drive.google.com/drive/folders/1OfYWWJbaXal6q7LttQlYKWAy0KTwkPRw?usp=drive_link -O ./ckpt --folder
+
+# Download the SMPL model
 gdown https://drive.google.com/drive/folders/1MCks7CMNBtAzU2XihYezNmiGT_6pWex8?usp=drive_link -O ./datasets/hub --folder
 ```
 
