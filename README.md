@@ -5,7 +5,7 @@
 
 - [x] Inference Code
 - [x] Pretrained Models
-- [ ] A web demo
+- [x] A web demo
 - [ ] Training Code
 
 # ⚒️ Installation
@@ -40,4 +40,9 @@ bash preprocess/bash_raw_cospeech_download.sh
 > Require download dataset 
 ```
 python test.py -c configs/shortcut_rvqvae_128.yaml
+```
+
+## Demo
+```
+python demo.py -c configs/shortcut_rvqvae_128_hf.yaml
 ```
