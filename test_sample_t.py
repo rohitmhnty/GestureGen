@@ -1,181 +1,173 @@
-import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import time
 import os
 
+def f_mode(u, s):
+    """
+    Implements the mode sampling function f_mode(u; s).
+    """
+    return 1 - u - s * (np.cos(np.pi/2 * u)**2 - 1 + u)
 
-def exponential_pdf(x, a):
+def f_mode_inverse(t, s):
+    """
+    Numerically computes the inverse of f_mode for a given t and s.
+    """
+    from scipy.optimize import root_scalar
+    
+    def objective(u):
+        return f_mode(u, s) - t
+    
+    try:
+        result = root_scalar(objective, bracket=[0, 1], method='brentq')
+        return result.root
+    except:
+        return np.nan
+
+def uniform_pdf(x):
+    """Uniform distribution density on [0,1]"""
+    return np.ones_like(x)
+
+def exponential_pdf(x, a=2):
+    """Exponential distribution density with parameter a"""
     C = a / (np.exp(a) - 1)
     return C * np.exp(a * x)
 
-def sample_t_fast(num_samples, a=2, t_min=1e-5, t_max=1-1e-5):
-    # Direct inverse sampling for exponential distribution
-    C = a / (np.exp(a) - 1)
-    
-    # Generate uniform samples
-    u = torch.rand(num_samples * 2)
-    
-    # Inverse transform sampling formula for the exponential PDF
-    # F^(-1)(u) = (1/a) * ln(1 + u*(exp(a) - 1))
-    t = (1/a) * torch.log(1 + u * (np.exp(a) - 1))
-    
-    # Combine t and 1-t
-    t = torch.cat([t, 1 - t])
-    
-    # Random permutation and slice
-    t = t[torch.randperm(t.shape[0])][:num_samples]
-    
-    # Scale to [t_min, t_max]
-    t = t * (t_max - t_min) + t_min
-    
-    return t
-
-def sample_t(num_samples):
-    # uniform sampling from 0 to 1
-    t = torch.rand(num_samples)
-    return t
-
-def sample_mode(num_samples, s=0.0, t_min=1e-5, t_max=1-1e-5, device='cpu'):
+def logit_normal_pdf(x, m=0, s=1):
     """
-    Mode sampling with heavy tails.
-    Args:
-        num_samples: Number of samples to generate
-        s: Scale parameter (-1 ≤ s ≤ 2/(π-2))
-        t_min, t_max: Range limits to avoid numerical issues
+    Logit-normal distribution density:
+    π_ln(t; m, s) = 1/(s√(2π)) * 1/(t(1-t)) * exp(-(logit(t)-m)^2/(2s^2))
+    where logit(t) = log(t/(1-t))
     """
-    # Generate uniform samples
-    u = torch.rand(num_samples, device=device)
-    
-    # Apply the mode sampling function
-    pi_half = torch.pi / 2
-    cos_term = torch.cos(pi_half * u)
-    t = 1 - u - s * (cos_term * cos_term - 1 + u)
-    
-    # Scale to [t_min, t_max]
-    t = t * (t_max - t_min) + t_min
-    
-    return t
+    logit = np.log(x/(1-x))
+    return (1/(s * np.sqrt(2*np.pi))) * (1/(x*(1-x))) * np.exp(-(logit - m)**2/(2*s**2))
 
-
-def sample_cosmap(num_samples, t_min=1e-5, t_max=1-1e-5, device='cpu'):
+def mode_pdf(x, s=0.5, eps=1e-6):
     """
-    CosMap sampling.
-    Args:
-        num_samples: Number of samples to generate
-        t_min, t_max: Range limits to avoid numerical issues
+    Computes the mode sampling density π_mode(t; s).
+    
+    Parameters:
+    - x: Input values (numpy array)
+    - s: Scale parameter (float), must be in [-1, 2/(π-2)]
+    - eps: Step size for numerical differentiation
+    
+    Returns:
+    - Density values at input points x
     """
-    # Generate uniform samples
-    u = torch.rand(num_samples, device=device)
+    # Validate s parameter
+    s_max = 2/(np.pi - 2)
+    if s < -1 or s > s_max:
+        raise ValueError(f"s must be in [-1, {s_max}]")
     
-    # Apply the cosine mapping
-    pi_half = torch.pi / 2
-    t = 1 - 1 / (torch.tan(pi_half * u) + 1)
+    # Vectorize the computation
+    densities = np.zeros_like(x, dtype=float)
     
-    # Scale to [t_min, t_max]
-    t = t * (t_max - t_min) + t_min
-    
-    return t
-    
-
-def sample_logits_t(num_samples, a=2):
-    t = torch.sigmoid(torch.randn((num_samples,), dtype=torch.float32))
-    return t
-
-import time
-
-def compare_sampling_distributions(num_samples=50000, save_dir='.', exponential_a=2, mode_s=0.5, device='cpu'):
-    """Compare all sampling methods with separate plots"""
-    
-    # Set style for publication-quality figures
-    plt.style.use('seaborn-whitegrid')
-    # plt.rcParams['font.family'] = 'Times New Roman'
-    plt.rcParams['font.size'] = 12
-    plt.rcParams['axes.labelsize'] = 14
-    plt.rcParams['axes.titlesize'] = 14
-    
-    # Generate samples from all methods
-    samples = {
-        'Uniform': sample_t(num_samples).numpy(),
-        'Exponential': sample_t_fast(num_samples, a=exponential_a).numpy(),
-        'Logit-Normal': sample_logits_t(num_samples).numpy(),
-        'Mode': sample_mode(num_samples, s=mode_s, device=device).cpu().numpy(),
-        'CosMap': sample_cosmap(num_samples, device=device).cpu().numpy()
-    }
-
-    # Create individual plots
-    plt.figure(figsize=(20, 8))
-    
-    # Plot settings
-    plot_params = {
-        'Uniform': {'color': '#1f77b4', 'title': 'Uniform Sampling'},
-        'Exponential': {'color': '#ff7f0e', 'title': f'Exponential Sampling (a={exponential_a})'},
-        'Logit-Normal': {'color': '#2ca02c', 'title': 'Logit-Normal Sampling'},
-        'Mode': {'color': '#d62728', 'title': f'Mode Sampling (s={mode_s})'},
-        'CosMap': {'color': '#9467bd', 'title': 'CosMap Sampling'}
-    }
-    
-    for idx, (name, data) in enumerate(samples.items(), 1):
-        plt.subplot(1, 5, idx)
+    for i, t in enumerate(x):
+        # Skip values too close to 0 or 1 for numerical stability
+        if t < eps or t > 1 - eps:
+            densities[i] = np.nan
+            continue
+            
+        # Compute derivative using central differences
+        t_plus = min(t + eps, 1 - eps)
+        t_minus = max(t - eps, eps)
         
-        # Create histogram
-        hist, bins, _ = plt.hist(data, bins=50, density=True, 
-                               alpha=0.7, 
-                               color=plot_params[name]['color'],
-                               label='Samples')
+        u_plus = f_mode_inverse(t_plus, s)
+        u_minus = f_mode_inverse(t_minus, s)
         
-        # Calculate mean and std
-        mean = np.mean(data)
-        std = np.std(data)
-        
-        plt.title(plot_params[name]['title'])
-        plt.xlabel('t')
-        plt.ylabel('Density' if idx == 1 else '')
-        
-        # Add text with statistics
-        plt.text(0.05, 0.95, f'μ = {mean:.3f}\nσ = {std:.3f}',
-                transform=plt.gca().transAxes,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        plt.grid(True, alpha=0.3)
-        plt.ylim(0, max(hist) * 2)  # Give some headroom for text
+        if np.isnan(u_plus) or np.isnan(u_minus):
+            densities[i] = np.nan
+        else:
+            # Absolute value of derivative
+            densities[i] = abs((u_plus - u_minus) / (2 * eps))
+    
+    # Interpolate any NaN values
+    mask = np.isnan(densities)
+    if np.any(mask):
+        x_valid = x[~mask]
+        densities_valid = densities[~mask]
+        from scipy.interpolate import interp1d
+        f = interp1d(x_valid, densities_valid, bounds_error=False, fill_value='extrapolate')
+        densities[mask] = f(x[mask])
+    
+    return densities
 
+def lognormal_pdf(x, mu=0, sigma=1):
+    """
+    Lognormal distribution density function using NumPy.
+    
+    Parameters:
+    - x: Input values (ndarray, must be positive).
+    - mu: Mean of the log of the distribution (default: 0).
+    - sigma: Standard deviation of the log of the distribution (default: 1).
+    
+    Returns:
+    - Lognormal PDF evaluated at x (ndarray).
+    """
+    # Avoid division by zero for x <= 0
+    x = np.clip(x, 1e-10, 1 - 1e-10)
+
+    def logit(x):
+        """Logit function: log(t / (1 - t))."""
+        x = np.clip(x, 1e-10, 1 - 1e-10)  # Avoid division by zero or log of zero
+        return np.log(x / (1 - x))
+
+    logit_x = logit(x)
+    # Compute the lognormal PDF
+    coefficient = 1 / (sigma * np.sqrt(2 * np.pi) * x * (1 - x))
+    exponent = -0.5 * ((logit_x - mu) / sigma) ** 2
+    pdf = coefficient * np.exp(exponent)
+    return pdf
+
+def cosmap_pdf(x):
+    """
+    CosMap density:
+    π_CosMap(t) = 2/(π - 2πt + 2πt²)
+    """
+    return 2/(np.pi - 2*np.pi*x + 2*np.pi*x**2)
+
+def beta_pdf(x, a=2, b=1.2):
+    """
+    Beta distribution density:
+    π_Beta(t; a, b) = t^(a-1) * (1-t)^(b-1) / B(a, b)
+    where B(a, b) is the beta function
+    """
+    from scipy.special import beta
+    return x**(a-1) * (1-x)**(b-1) / beta(a, b)
+
+def plot_theoretical_densities(save_dir='.', exponential_a=2, mode_s=0.5, logit_m=0, logit_s=1):
+    plt.figure(figsize=(10, 8))
+    
+    # Generate x values for theoretical curves, avoiding exact 0 and 1
+    x = np.linspace(0.001, 0.999, 1000)
+    
+    # Plot theoretical density functions
+    plt.plot(x, uniform_pdf(x), '-', color='#1f77b4', label='Uniform', linewidth=2)
+    # plt.plot(x, exponential_pdf(x, exponential_a), '-', color='#ff7f0e', label=f'Exponential (a={exponential_a})', linewidth=2)
+    plt.plot(x, lognormal_pdf(x, logit_m, logit_s), '-', color='#2ca02c', label=f'Logit-Normal (m={logit_m}, s={logit_s})', linewidth=2)
+    plt.plot(x, mode_pdf(x, mode_s), '-', color='#d62728', label=f'Mode (s={mode_s})', linewidth=2)
+    plt.plot(x, cosmap_pdf(x), '-', color='#9467bd', label='CosMap', linewidth=2)
+    plt.plot(x, beta_pdf(x), '-', color='#8c564b', label=f'Beta (a=2, b=1.2)', linewidth=2)
+    
+    # plt.title('Theoretical Sampling Distribution Densities', fontsize=14)
+    plt.xlabel('Timestep', fontsize=20)
+    plt.ylabel('Density', fontsize=20)
+    plt.legend(fontsize=20)
+
+    # Increase the size of tick labels
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+
+    plt.grid(True, alpha=0.3)
+    
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'sampling_distributions.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(save_dir, 'theoretical_densities.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # Calculate and return statistics
-    stats = {}
-    for name, data in samples.items():
-        stats[name] = {
-            'mean': np.mean(data),
-            'std': np.std(data),
-            'min': np.min(data),
-            'max': np.max(data),
-            'median': np.median(data),
-            '25th': np.percentile(data, 25),
-            '75th': np.percentile(data, 75)
-        }
-
-    # Print detailed statistics
-    print("\nDetailed Statistics:")
-    print("-" * 100)
-    print(f"{'Method':<15} {'Mean':>10} {'Std':>10} {'Median':>10} {'25th':>10} {'75th':>10} {'Min':>10} {'Max':>10}")
-    print("-" * 100)
-    for method, stat in stats.items():
-        print(f"{method:<15} {stat['mean']:10.4f} {stat['std']:10.4f} {stat['median']:10.4f} "
-              f"{stat['25th']:10.4f} {stat['75th']:10.4f} {stat['min']:10.4f} {stat['max']:10.4f}")
-    print("-" * 100)
-
-    return stats
-
 if __name__ == "__main__":
-    results = compare_sampling_distributions(
-        num_samples=50000,
+    plot_theoretical_densities(
         save_dir='.',
         exponential_a=2,
         mode_s=0.5,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        logit_m=0,
+        logit_s=1
     )
-
