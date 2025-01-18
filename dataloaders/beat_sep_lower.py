@@ -25,7 +25,6 @@ from .utils.audio_features import Wav2Vec2Model
 from .data_tools import joints_list
 from .utils import rotation_conversions as rc
 from .utils import other_tools
-import pyarrow
 
 
 class MultiLMDBManager:
@@ -486,14 +485,6 @@ class CustomDataset(Dataset):
                     if not os.path.exists(audio_save_path):
                         os.makedirs(os.path.dirname(audio_save_path), exist_ok=True)
                     np.save(audio_save_path, audio_each_file)
-                
-                elif self.args.audio_rep == "my_feature":
-                    audio_each_file = extract_audio_features_chunked(audio_file, self.args.max_duration, self.args.audio_sr)
-                    audio_save_path = audio_file.replace("wave16k", "my_feature").replace(".wav", ".npy")
-                    
-                    if not os.path.exists(audio_save_path):
-                        os.makedirs(os.path.dirname(audio_save_path), exist_ok=True)
-                    np.save(audio_save_path, audio_each_file)
                     
                 elif self.args.audio_rep == "mfcc":
                     audio_each_file = librosa.feature.melspectrogram(y=audio_each_file, sr=self.args.audio_sr, n_mels=128, hop_length=int(self.args.audio_sr/self.args.audio_fps))
@@ -769,6 +760,8 @@ class CustomDataset(Dataset):
             sample_vid_list = []
             sample_trans_list = []
             sample_trans_v_list = []
+            sample_audio_name = []
+            
            
             for i in range(num_subdivision): # cut into around 2s chip, (self npose)
                 start_idx = clip_s_f_pose + i * self.args.stride
@@ -806,6 +799,7 @@ class CustomDataset(Dataset):
                         sample_sem_list.append(sample_sem)
                         sample_trans_list.append(sample_trans)
                         sample_trans_v_list.append(sample_trans_v)
+                        sample_audio_name.append(audio_file)
                     else:
                         n_filtered_out[filtering_message] += 1
 
@@ -814,7 +808,7 @@ class CustomDataset(Dataset):
                 start_idx = self.n_out_samples
 
                 
-                for pose, audio, facial, shape, word, vid, emo, sem, trans,trans_v in zip(
+                for pose, audio, facial, shape, word, vid, emo, sem, trans,trans_v, audio_name in zip(
                     sample_pose_list,
                     sample_audio_list,
                     sample_facial_list,
@@ -824,8 +818,9 @@ class CustomDataset(Dataset):
                     sample_emo_list,
                     sample_sem_list,
                     sample_trans_list,
-                    sample_trans_v_list,):
-                    v = [pose, audio, facial, shape, word, emo, sem, vid, trans, trans_v]
+                    sample_trans_v_list,
+                    sample_audio_name):
+                    v = [pose, audio, facial, shape, word, emo, sem, vid, trans, trans_v, audio_name]
                     lmdb_manager.add_sample(v)
                     self.n_out_samples += 1
 
@@ -841,7 +836,7 @@ class CustomDataset(Dataset):
             key = "{:008d}".format(idx).encode("ascii")
             sample = txn.get(key)
             sample = pickle.loads(sample)
-            tar_pose, in_audio, in_facial, in_shape, in_word, emo, sem, vid, trans, trans_v = sample
+            tar_pose, in_audio, in_facial, in_shape, in_word, emo, sem, vid, trans, trans_v, audio_name = sample
             #print(in_shape)
             #vid = torch.from_numpy(vid).int()
             emo = torch.from_numpy(emo).int()
@@ -864,7 +859,7 @@ class CustomDataset(Dataset):
                 tar_pose = torch.from_numpy(tar_pose).reshape((tar_pose.shape[0], -1)).float()
                 in_facial = torch.from_numpy(in_facial).reshape((in_facial.shape[0], -1)).float()
         
-        return {"pose":tar_pose, "audio":in_audio, "facial":in_facial, "beta": in_shape, "word":in_word, "id":vid, "emo":emo, "sem":sem, "trans":trans,"trans_v":trans_v}
+        return {"pose":tar_pose, "audio":in_audio, "facial":in_facial, "beta": in_shape, "word":in_word, "id":vid, "emo":emo, "sem":sem, "trans":trans,"trans_v":trans_v, "audio_name":audio_name}
 
          
 class MotionPreprocessor:
