@@ -3,7 +3,8 @@ model:
   g_name: GestureLSM
   do_classifier_free_guidance: False
   guidance_scale: 2
-  n_steps: 10
+  n_steps: 20
+  use_exp: False
 
   denoiser:
     target: models.denoiser.GestureDenoiser
@@ -21,6 +22,7 @@ model:
       flip_sin_to_cos: True
       freq_shift: 0.0
       cond_proj_dim: 256
+      use_exp: ${model.use_exp}
 
 
   modality_encoder:
@@ -33,4 +35,5 @@ model:
       raw_audio: False
       latent_dim: 256
       audio_fps: 30
+      use_exp: ${model.use_exp}
   
