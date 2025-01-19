@@ -23,6 +23,7 @@ class GestureDenoiser(nn.Module):
         flip_sin_to_cos= True,
         freq_shift = 0,
         cond_proj_dim=None,
+        use_exp=False,
     
     ):
         super().__init__()
@@ -37,11 +38,13 @@ class GestureDenoiser(nn.Module):
         self.dropout = dropout
         self.activation = activation
         self.input_feats = self.njoints * self.nfeats
+        self.use_exp = use_exp
+        self.joint_num = 3 if not self.use_exp else 4
         
         self.sequence_pos_encoder = PositionalEncoding(self.latent_dim, self.dropout)
 
         self.cross_attn_blocks = nn.ModuleList([
-            CrossAttentionBlock(dim=self.latent_dim*3,num_heads=self.num_heads,mlp_ratio=self.ff_size//self.latent_dim,drop_path=self.dropout) #hidden是对应于输入x的维度，attn_heads应该是12，这里写1是为了方便调试流程
+            CrossAttentionBlock(dim=self.latent_dim*self.joint_num,num_heads=self.num_heads,mlp_ratio=self.ff_size//self.latent_dim,drop_path=self.dropout) #hidden是对应于输入x的维度，attn_heads应该是12，这里写1是为了方便调试流程
                 for _ in range(3)])
         
         self.mytimmblocks = nn.ModuleList([
@@ -51,7 +54,7 @@ class GestureDenoiser(nn.Module):
         self.embed_timestep = TimestepEmbedder(self.latent_dim, self.sequence_pos_encoder)
         self.n_seed = n_seed
         
-        self.embed_text = nn.Linear(self.input_feats*3*4, self.latent_dim)
+        self.embed_text = nn.Linear(self.input_feats*self.joint_num*4, self.latent_dim)
 
         self.output_process = OutputProcess(self.data_rep, self.input_feats, self.latent_dim, self.njoints,self.nfeats)
 
@@ -64,7 +67,8 @@ class GestureDenoiser(nn.Module):
         self.time_proj = Timesteps(time_dim, flip_sin_to_cos, freq_shift)
         if cond_proj_dim is not None:
             self.cond_proj = Timesteps(time_dim, flip_sin_to_cos, freq_shift)
-        self.null_cond_embed = nn.Parameter(torch.zeros(32, self.latent_dim*3), requires_grad=True)
+        
+        self.null_cond_embed = nn.Parameter(torch.zeros(32, self.latent_dim*self.joint_num), requires_grad=True)
 
     # dropout mask
     def prob_mask_like(self, shape, prob, device):
@@ -106,7 +110,7 @@ class GestureDenoiser(nn.Module):
     
 
 
-    def forward(self, x, timesteps, seed, at_feat, cond_time=None, cond_drop_prob: float = 0.2, null_cond=False, do_classifier_free_guidance=False, force_cfg=None):
+    def forward(self, x, timesteps, seed, at_feat, cond_time=None, cond_drop_prob: float = 0.1, null_cond=False, do_classifier_free_guidance=False, force_cfg=None):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
@@ -117,8 +121,8 @@ class GestureDenoiser(nn.Module):
 
         if x.shape[2] == 1:
             x = x.squeeze(2)
-            x = x.reshape(x.shape[0], 3, -1, x.shape[2])
-
+            x = x.reshape(x.shape[0], self.joint_num, -1, x.shape[2])
+            
         # Double the batch for classifier free guidance
         if do_classifier_free_guidance and not self.training:
             x = torch.cat([x] * 2, dim=0)
@@ -140,7 +144,7 @@ class GestureDenoiser(nn.Module):
         emb_t = self.time_embedding(time_emb)
         
         if self.n_seed != 0:
-            embed_text = self.embed_text(seed.reshape(bs, -1))       # (bs, 4, 1536) -> (bs, 6144) -> (bs, 512)
+            embed_text = self.embed_text(seed.reshape(bs, -1))
             emb_seed = embed_text
         
         # Handle both conditional and unconditional branches in a single forward pass
@@ -171,17 +175,17 @@ class GestureDenoiser(nn.Module):
         xseq = self.input_process(x)
 
         # add the seed information
-        embed_style_2 = (emb_seed + emb_t).unsqueeze(1).unsqueeze(2).expand(-1, 3, 32, -1)  # (300, 256)
+        embed_style_2 = (emb_seed + emb_t).unsqueeze(1).unsqueeze(2).expand(-1, self.joint_num, 32, -1)  # (300, 256)
         xseq = torch.cat([embed_style_2, xseq], axis=-1)  # -> [88, 300, 576]
         
         xseq = self.input_process2(xseq)
         
 
         # apply the positional encoding
-        xseq = xseq.reshape(bs * 3, nframes, -1) # [300, 8, 88, 32] -> [2400, 88, 32]
-        pos_emb = self.rel_pos(xseq)  # (88, 32)
-        xseq, _ = apply_rotary_pos_emb(xseq, xseq, pos_emb) # [2400, 88, 32]
-        xseq = xseq.reshape(bs, 3, nframes, -1) # [300, 8, 88, 32]
+        xseq = xseq.reshape(bs * self.joint_num, nframes, -1)
+        pos_emb = self.rel_pos(xseq)
+        xseq, _ = apply_rotary_pos_emb(xseq, xseq, pos_emb)
+        xseq = xseq.reshape(bs, self.joint_num, nframes, -1)
         xseq = xseq.view(bs, 32, -1)
 
         

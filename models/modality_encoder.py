@@ -41,6 +41,7 @@ class ModalityEncoder(nn.Module):
                  raw_audio=False,
                  latent_dim=256,
                  audio_fps=30,
+                 use_exp=False,
                  ):
         super().__init__()
         
@@ -64,9 +65,15 @@ class ModalityEncoder(nn.Module):
             self.audio_projection = nn.Linear(1024, audio_dim)
 
         if self.raw_audio:
-            self.mix_audio_text = nn.Linear(audio_dim*3, self.latent_dim*3)
+            if use_exp:
+                self.mix_audio_text = nn.Linear(audio_dim*3, self.latent_dim*4)
+            else:
+                self.mix_audio_text = nn.Linear(audio_dim*3, self.latent_dim*3)
         else:
-            self.mix_audio_text = nn.Linear(audio_dim*2, self.latent_dim*3)
+            if use_exp:
+                self.mix_audio_text = nn.Linear(audio_dim*2, self.latent_dim*4)
+            else:
+                self.mix_audio_text = nn.Linear(audio_dim*2, self.latent_dim*3)
     
     def forward(self, audio, word, raw_audio=None, squeeze_scale=4):
         # Initial features extraction - single transpose each

@@ -9,6 +9,8 @@ import numpy as np
 from omegaconf import DictConfig
 from typing import Dict
 import math
+import torch
+import torch.distributions as dist
 
 import torch
 import torch.nn.functional as F
@@ -39,6 +41,31 @@ def sample_t(exponential_pdf, num_samples, a=2):
     # Scale t to [t_min, t_max]
     t = t * (t_max - t_min) + t_min
     return t
+
+def sample_beta_distribution(num_samples, alpha=2, beta=0.8, t_min=1e-5, t_max=1-1e-5):
+    """
+    Samples from a Beta distribution with the specified parameters.
+    
+    Args:
+        num_samples (int): Number of samples to generate.
+        alpha (float): Alpha parameter of the Beta distribution (shape1).
+        beta (float): Beta parameter of the Beta distribution (shape2).
+        t_min (float): Minimum value for scaling the samples (default is near 0).
+        t_max (float): Maximum value for scaling the samples (default is near 1).
+        
+    Returns:
+        torch.Tensor: Tensor of sampled values.
+    """
+    # Define the Beta distribution
+    beta_dist = dist.Beta(alpha, beta)
+    
+    # Sample values from the Beta distribution
+    samples = beta_dist.sample((num_samples,))
+    
+    # Scale the samples to the range [t_min, t_max]
+    scaled_samples = samples * (t_max - t_min) + t_min
+    
+    return scaled_samples
 
 def sample_t_fast(num_samples, a=2, t_min=1e-5, t_max=1-1e-5):
     # Direct inverse sampling for exponential distribution
@@ -101,6 +128,8 @@ class GestureLSM(torch.nn.Module):
 
         # Loss functions
         self.smooth_l1_loss = torch.nn.SmoothL1Loss(reduction='none')
+        
+        self.num_joints = 3 if not self.cfg.model.use_exp else 4
 
     def summarize_parameters(self) -> None:
         logger.info(f'Denoiser: {count_parameters(self.denoiser)}M')
@@ -123,14 +152,17 @@ class GestureLSM(torch.nn.Module):
         seed_vectors = condition_dict['y']['seed']
         mask = condition_dict['y']['mask']
         style_features = condition_dict['y']['style_feature']
-        wavlm_features = condition_dict['y']['wavlm']
+        if 'wavlm' in condition_dict['y']:
+            wavlm_features = condition_dict['y']['wavlm']
+        else:
+            wavlm_features = None
         
         # Encode input modalities
         audio_features = self.modality_encoder(audio, word_tokens, wavlm_features)
 
         # Initialize generation
         batch_size = audio_features.shape[0]
-        latent_shape = (batch_size, 128 * 3, 1, 32)
+        latent_shape = (batch_size, 128 * self.num_joints, 1, 32)
         
         # Sampling parameters
         x_t = torch.randn(latent_shape, device=audio_features.device)
