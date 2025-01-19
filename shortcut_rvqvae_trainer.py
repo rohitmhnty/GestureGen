@@ -16,7 +16,7 @@ import pprint
 from loguru import logger
 from utils import rotation_conversions as rc
 from typing import Dict
-from utils import config, logger_tools, other_tools, metric, data_transfer
+from utils import config, logger_tools, other_tools, metric, data_transfer, other_tools_hf
 from utils.joints import upper_body_mask, hands_body_mask, lower_body_mask
 from dataloaders import data_tools
 from optimizers.optim_factory import create_optimizer
@@ -35,6 +35,7 @@ class CustomTrainer(train.BaseTrainer):
     def __init__(self, args, cfg):
         super().__init__(args, cfg)
         self.args = args
+        self.cfg = cfg
         self.joints = self.train_data.joints
 
         self.ori_joint_list = joints_list[self.args.ori_joints]
@@ -85,18 +86,17 @@ class CustomTrainer(train.BaseTrainer):
 
         ##### VQ-VAE models #####
         """Initialize and load VQ-VAE models for different body parts."""
-        # Face VQ model
-        vq_model_module = __import__("models.motion_representation", fromlist=["something"])
-        self.vq_model_face = self._create_face_vq_model(vq_model_module)
-        
         # Body part VQ models
         self.vq_models = self._create_body_vq_models()
         
         # Set all VQ models to eval mode
-        self.vq_model_face.eval().to(self.rank)
         for model in self.vq_models.values():
             model.eval().to(self.rank)
-        self.vq_model_upper, self.vq_model_hands, self.vq_model_lower = self.vq_models.values()
+        if self.cfg.model.use_exp:
+            self.vq_model_upper, self.vq_model_hands, self.vq_model_lower, self.vq_model_face = self.vq_models.values()
+        else:
+            self.vq_model_upper, self.vq_model_hands, self.vq_model_lower = self.vq_models.values()
+            
         self.vqvae_latent_scale = self.args.vqvae_latent_scale 
 
         self.args.vae_length = 240
@@ -121,16 +121,7 @@ class CustomTrainer(train.BaseTrainer):
         if self.args.use_trans:
             self.trans_mean = torch.from_numpy(np.load(self.args.mean_trans_path)).cuda()
             self.trans_std = torch.from_numpy(np.load(self.args.std_trans_path)).cuda()
-    
-    def _create_face_vq_model(self, module):
-        """Create and initialize face VQ model."""
-        self.args.vae_layer = 2
-        self.args.vae_length = 256
-        self.args.vae_test_dim = 106
-        model = getattr(module, "VQVAEConvZero")(self.args).to(self.rank)
-        other_tools.load_checkpoints(model, "./datasets/hub/pretrained_vq/face_vertex_1layer_790.bin", 
-                                   self.args.e_name)
-        return model
+
     
     def _create_body_vq_models(self) -> Dict[str, RVQVAE]:
         """Create VQ-VAE models for body parts."""
@@ -139,6 +130,8 @@ class CustomTrainer(train.BaseTrainer):
             'hands': {'dim_pose': 180},
             'lower': {'dim_pose': 54 if not self.args.use_trans else 57}
         }
+        if self.cfg.model.use_exp:
+            vq_configs['face'] = {'dim_pose': 100}
 
         vq_models = {}
         for part, config in vq_configs.items():
@@ -189,6 +182,10 @@ class CustomTrainer(train.BaseTrainer):
             wavlm = dict_data["wavlm"].to(self.rank)
         else:
             wavlm = None
+        if 'audio_name' in dict_data:
+            audio_name = dict_data["audio_name"]
+        else:
+            audio_name = None
         in_word = dict_data["word"].to(self.rank)
         tar_beta = dict_data["beta"].to(self.rank)
         tar_id = dict_data["id"].to(self.rank).long()
@@ -222,8 +219,11 @@ class CustomTrainer(train.BaseTrainer):
         latent_upper_top = self.vq_model_upper.map2latent(tar_pose_upper)
         latent_hands_top = self.vq_model_hands.map2latent(tar_pose_hands)
         latent_lower_top = self.vq_model_lower.map2latent(tar_pose_lower)
-        
-        latent_in = torch.cat([latent_upper_top, latent_hands_top, latent_lower_top], dim=2)/self.args.vqvae_latent_scale
+        if self.cfg.model.use_exp:
+            latent_face_top = self.vq_model_face.map2latent(tar_exps)
+            latent_in = torch.cat([latent_upper_top, latent_hands_top, latent_lower_top, latent_face_top], dim=2)/self.args.vqvae_latent_scale
+        else:
+            latent_in = torch.cat([latent_upper_top, latent_hands_top, latent_lower_top], dim=2)/self.args.vqvae_latent_scale
         
         style_feature = None
         
@@ -239,6 +239,7 @@ class CustomTrainer(train.BaseTrainer):
             "tar_id": tar_id,
             "tar_contact": tar_contact,
             "style_feature":style_feature,
+            "audio_name": audio_name
         }
 
 
@@ -273,7 +274,6 @@ class CustomTrainer(train.BaseTrainer):
         tar_pose_jaw = tar_pose[:, :, 66:69]
         tar_pose_jaw = rc.axis_angle_to_matrix(tar_pose_jaw.reshape(bs, n, 1, 3))
         tar_pose_jaw = rc.matrix_to_rotation_6d(tar_pose_jaw).reshape(bs, n, 1*6)
-        tar_pose_face = torch.cat([tar_pose_jaw, tar_exps], dim=2)
 
         tar_pose_hands = tar_pose[:, :, 25*3:55*3]
         tar_pose_hands = rc.axis_angle_to_matrix(tar_pose_hands.reshape(bs, n, 30, 3))
@@ -286,11 +286,9 @@ class CustomTrainer(train.BaseTrainer):
         tar_pose_leg = tar_pose[:, :, self.joint_mask_lower.astype(bool)]
         tar_pose_leg = rc.axis_angle_to_matrix(tar_pose_leg.reshape(bs, n, 9, 3))
         tar_pose_leg = rc.matrix_to_rotation_6d(tar_pose_leg).reshape(bs, n, 9*6)
-        tar_pose_lower = torch.cat([tar_pose_leg, tar_trans, tar_contact], dim=2)
         
         tar_pose_6d = rc.axis_angle_to_matrix(tar_pose.reshape(bs, n, 55, 3))
         tar_pose_6d = rc.matrix_to_rotation_6d(tar_pose_6d).reshape(bs, n, 55*6)
-        latent_all = torch.cat([tar_pose_6d, tar_trans, tar_contact], dim=-1)
         
         rec_all_face = []
         rec_all_upper = []
@@ -338,25 +336,35 @@ class CustomTrainer(train.BaseTrainer):
             code_dim = self.vq_model_upper.code_dim
             rec_latent_upper = sample[...,:code_dim]
             rec_latent_hands = sample[...,code_dim:code_dim*2]
-            rec_latent_lower = sample[...,code_dim*2:]
+            rec_latent_lower = sample[...,code_dim*2:code_dim*3]
+            if self.cfg.model.use_exp:
+                rec_latent_face = sample[...,code_dim*3:code_dim*4]
             
            
             if i == 0:
                 rec_all_upper.append(rec_latent_upper)
                 rec_all_hands.append(rec_latent_hands)
                 rec_all_lower.append(rec_latent_lower)
+                if self.cfg.model.use_exp:
+                    rec_all_face.append(rec_latent_face)
             else:
                 rec_all_upper.append(rec_latent_upper[:, self.args.pre_frames:])
                 rec_all_hands.append(rec_latent_hands[:, self.args.pre_frames:])
                 rec_all_lower.append(rec_latent_lower[:, self.args.pre_frames:])
+                if self.cfg.model.use_exp:
+                    rec_all_face.append(rec_latent_face[:, self.args.pre_frames:])
 
         rec_all_upper = torch.cat(rec_all_upper, dim=1) * self.vqvae_latent_scale
         rec_all_hands = torch.cat(rec_all_hands, dim=1) * self.vqvae_latent_scale
         rec_all_lower = torch.cat(rec_all_lower, dim=1) * self.vqvae_latent_scale
+        if self.cfg.model.use_exp:
+            rec_all_face = torch.cat(rec_all_face, dim=1) * self.vqvae_latent_scale
 
         rec_upper = self.vq_model_upper.latent2origin(rec_all_upper)[0]
         rec_hands = self.vq_model_hands.latent2origin(rec_all_hands)[0]
         rec_lower = self.vq_model_lower.latent2origin(rec_all_lower)[0]
+        if self.cfg.model.use_exp:
+            rec_face = self.vq_model_face.latent2origin(rec_all_face)[0]
         
         
         if self.use_trans:
@@ -379,8 +387,10 @@ class CustomTrainer(train.BaseTrainer):
         tar_trans = tar_trans[:, :n, :]
         tar_beta = tar_beta[:, :n, :]
 
-
-        rec_exps = tar_exps
+        if self.cfg.model.use_exp:
+            rec_exps = rec_face
+        else:
+            rec_exps = tar_exps
         
         rec_pose_legs = rec_lower[:, :, :54]
         bs, n = rec_pose_legs.shape[0], rec_pose_legs.shape[1]
@@ -552,8 +562,8 @@ class CustomTrainer(train.BaseTrainer):
                 )
                 total_length += n
 
-        logger.info(f"l2 loss: {l2_all/total_length}")
-        logger.info(f"lvel loss: {lvel/total_length}")
+        logger.info(f"l2 loss: {l2_all/total_length:.10f}")
+        logger.info(f"lvel loss: {lvel/total_length:.10f}")
 
         latent_out_all = np.concatenate(latent_out, axis=0)
         latent_ori_all = np.concatenate(latent_ori, axis=0)
