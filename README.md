@@ -19,6 +19,7 @@
 ```
 conda create -n gesturelsm python=3.12
 conda activate gesturelsm
+conda install pytorch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 pytorch-cuda=11.8 -c pytorch -c nvidia
 pip install -r requirements.txt
 bash demo/install_mfa.sh
 ```
