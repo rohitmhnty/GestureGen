@@ -616,4 +616,4 @@ if __name__ == "__main__":
     os.environ["MASTER_ADDR"]='127.0.0.3'
     os.environ["MASTER_PORT"]='8678'
     #os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
-    demo.launch(server_name="0.0.0.0",share=True)
+    demo.launch(server_name="localhost",share=True)

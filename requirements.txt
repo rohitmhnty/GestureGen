@@ -21,7 +21,7 @@ textgrid
 termcolor
 transformers
 gdown
-fasttext
+fasttext-wheel
 pyrender
 trimesh
 imageio
