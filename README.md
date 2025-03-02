@@ -26,7 +26,7 @@ bash demo/install_mfa.sh
 
 ## Download Model
 ```
-# Download the pretrained model (Shortcut) + (Diffusion) + (RVQ-VAEs)
+# Download the pretrained model (Shortcut) + (Shortcut-reflow) + (Diffusion) + (RVQ-VAEs)
 gdown https://drive.google.com/drive/folders/1OfYWWJbaXal6q7LttQlYKWAy0KTwkPRw?usp=drive_link -O ./ckpt --folder
 
 # Download the SMPL model
@@ -44,7 +44,15 @@ bash preprocess/bash_raw_cospeech_download.sh
 ## Eval
 > Require download dataset 
 ```
+# Evaluate the pretrained shortcut model (20 steps)
 python test.py -c configs/shortcut_rvqvae_128.yaml
+
+# Evaluate the pretrained shortcut-reflow model (2-step)
+python test.py -c configs/shortcut_reflow_test.yaml
+
+# Evaluate the pretrained diffusion model
+python test.py -c configs/diffuser_rvqvae_128.yaml
+
 ```
 
 ## Demo
