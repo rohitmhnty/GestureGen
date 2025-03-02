@@ -1,0 +1,39 @@
+model:
+  model_name: LSM
+  g_name: GestureLSM
+  do_classifier_free_guidance: False
+  guidance_scale: 2
+  n_steps: 2
+  use_exp: False
+
+  denoiser:
+    target: models.denoiser.GestureDenoiser
+    params:
+      njoints: 128
+      data_rep: "rot6d"
+      nfeats: 1
+      latent_dim: 256
+      ff_size: 1024
+      num_layers: 8
+      num_heads: 4
+      dropout: 0.1
+      activation: "gelu"
+      n_seed: 8
+      flip_sin_to_cos: True
+      freq_shift: 0.0
+      cond_proj_dim: 256
+      use_exp: ${model.use_exp}
+
+
+  modality_encoder:
+    target: models.modality_encoder.ModalityEncoder
+    params:
+      data_path: ./datasets/BEAT_SMPL/beat_v2.0.0/beat_english_v2.0.0/
+      t_fix_pre: False
+      audio_dim: 256
+      audio_in: 2
+      raw_audio: False
+      latent_dim: 256
+      audio_fps: 30
+      use_exp: ${model.use_exp}
+  
