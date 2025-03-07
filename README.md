@@ -10,7 +10,7 @@
 - [x] Inference Code
 - [x] Pretrained Models
 - [x] A web demo
-- [ ] Training Code
+- [x] Training Code
 
 # ⚒️ Installation
 

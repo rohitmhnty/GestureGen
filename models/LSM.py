@@ -157,23 +157,32 @@ class GestureLSM(torch.nn.Module):
         else:
             wavlm_features = None
         
+        return_dict = {}
+        return_dict['seed'] = seed_vectors
+        
         # Encode input modalities
         audio_features = self.modality_encoder(audio, word_tokens, wavlm_features)
+        return_dict['at_feat'] = audio_features
 
         # Initialize generation
         batch_size = audio_features.shape[0]
         latent_shape = (batch_size, 128 * self.num_joints, 1, 32)
+
+        
         
         # Sampling parameters
         x_t = torch.randn(latent_shape, device=audio_features.device)
+
+        return_dict['init_noise'] = x_t
+        
         epsilon = 1e-8
         delta_t = torch.tensor(1 / self.num_inference_steps).to(audio_features.device)
         timesteps = torch.linspace(epsilon, 1 - epsilon, self.num_inference_steps + 1).to(audio_features.device)
         
         # Generation loop
         for step in range(1, len(timesteps)):
-            current_t = timesteps[step - 1].unsqueeze(0).repeat((batch_size,))
-            current_delta = delta_t.unsqueeze(0).repeat((batch_size,))
+            current_t = timesteps[step - 1].unsqueeze(0)
+            current_delta = delta_t.unsqueeze(0)
             
             with torch.no_grad():
                 speed = self.denoiser.forward_with_cfg(
@@ -186,5 +195,298 @@ class GestureLSM(torch.nn.Module):
                 )
                
             x_t = x_t + (timesteps[step] - timesteps[step - 1]) * speed
+        return_dict['latents'] = x_t
+        return return_dict
+    
+    def forward_calculate_loss(self, condition_dict: Dict[str, Dict], latents: torch.Tensor, save_path: str, iter: int) -> Dict[str, torch.Tensor]:
+        """Compute losses for the forward pass.
+        
+        Args:
+            condition_dict: Dictionary containing input conditions
+            latents: Target latent vectors
+        
+        Returns:
+            Dictionary containing individual and total losses
+        """
+        # Extract input features
+        audio = condition_dict['y']['audio']
+        raw_audio = condition_dict['y']['wavlm']
+        word_tokens = condition_dict['y']['word']
+        instance_ids = condition_dict['y']['id']
+        seed_vectors = condition_dict['y']['seed']
+        attention_mask = condition_dict['y']['mask']
+        style_features = condition_dict['y']['style_feature']
+    
+        # Encode input modalities
+        audio_features = self.modality_encoder(audio, word_tokens, raw_audio)
 
-        return {'latents': x_t}
+        # Initialize noise
+        x0_noise = torch.randn_like(latents)
+
+        # Sample timesteps and deltas
+        deltas = 1 / torch.tensor([2 ** i for i in range(1, 8)]).to(latents.device)
+        delta_probs = torch.ones((deltas.shape[0],)).to(latents.device) / deltas.shape[0]
+
+        batch_size = latents.shape[0]
+        flow_batch_size = int(batch_size * 3/4)
+
+        # Sample random coefficients
+        epsilon = 1e-8
+
+        timesteps = torch.linspace(epsilon, 1 - epsilon, 50 + 1).to(audio_features.device)
+
+        losses = {}
+        for step in range(1, len(timesteps)):
+            t = timesteps[step - 1].unsqueeze(0).repeat((batch_size,))
+
+            # t = sample_t_fast(batch_size).to(latents.device)
+            d = deltas[delta_probs.multinomial(batch_size, replacement=True)]
+            d[:flow_batch_size] = 0
+
+            # Prepare inputs
+            t_coef = reshape_coefs(t)
+            x_t = t_coef * latents + (1 - t_coef) * x0_noise
+            t = t_coef.flatten()
+            
+            # Flow matching loss
+            flow_pred = self.denoiser(
+                x=x_t[:flow_batch_size],
+                timesteps=t[:flow_batch_size],
+                seed=seed_vectors[:flow_batch_size],
+                at_feat=audio_features[:flow_batch_size],
+                cond_time=d[:flow_batch_size],
+            )
+            
+            flow_target = latents[:flow_batch_size] - x0_noise[:flow_batch_size]
+            
+            flow_loss = F.mse_loss(flow_target, flow_pred, reduction='none').mean(dim=(1, 2, 3))
+            
+            losses[t[0].item()] = flow_loss.tolist()
+
+
+        #plot this loss
+        # save this loss into a csv file
+        with open(save_path + f'loss_{iter}.csv', 'w') as f:
+            for key, loss_vals in losses.items():
+                loss_vals_str = "\t".join(map(str, loss_vals))
+                f.write(f"{key}\t{loss_vals_str}\n")
+
+        return losses
+    
+    def train_forward(self, condition_dict: Dict[str, Dict], 
+                              latents: torch.Tensor, train_consistency=False) -> Dict[str, torch.Tensor]:
+        """Compute training losses for both flow matching and consistency.
+        
+        Args:
+            condition_dict: Dictionary containing training conditions
+            latents: Target latent vectors
+            
+        Returns:
+            Dictionary containing individual and total losses
+        """
+
+        # Extract input features
+        audio = condition_dict['y']['audio']
+        raw_audio = condition_dict['y']['wavlm']
+        word_tokens = condition_dict['y']['word']
+        instance_ids = condition_dict['y']['id']
+        seed_vectors = condition_dict['y']['seed']
+        mask = condition_dict['y']['mask']
+        style_features = condition_dict['y']['style_feature']
+    
+        # Encode input modalities
+        audio_features = self.modality_encoder(audio, word_tokens, raw_audio)
+
+        # Initialize noise
+        x0_noise = torch.randn_like(latents)
+
+        # Sample timesteps and deltas
+        deltas = 1 / torch.tensor([2 ** i for i in range(1, 8)]).to(latents.device)
+        delta_probs = torch.ones((deltas.shape[0],)).to(latents.device) / deltas.shape[0]
+
+        batch_size = latents.shape[0]
+        flow_batch_size = int(batch_size * 3/4)
+
+        # Sample random coefficients
+        t = sample_beta_distribution(batch_size, alpha=2, beta=1.2).to(latents.device)
+        # t = sample_beta_distribution(batch_size, alpha=2, beta=0.8).to(latents.device)
+        d = deltas[delta_probs.multinomial(batch_size, replacement=True)]
+        d[:flow_batch_size] = 0
+
+        # Prepare inputs
+        t_coef = reshape_coefs(t)
+        x_t = t_coef * latents + (1 - t_coef) * x0_noise
+        t = t_coef.flatten()
+        
+        # Flow matching loss
+        flow_pred = self.denoiser(
+            x=x_t[:flow_batch_size],
+            timesteps=t[:flow_batch_size],
+            seed=seed_vectors[:flow_batch_size],
+            at_feat=audio_features[:flow_batch_size],
+            cond_time=d[:flow_batch_size],
+        )
+        
+        flow_target = latents[:flow_batch_size] - x0_noise[:flow_batch_size]
+        
+        losses = {}
+        flow_loss = (F.mse_loss(flow_target, flow_pred) / t).mean()
+        losses['flow_loss'] = flow_loss
+
+        # Consistency loss computation
+        # Jan 11, perform cfg at the same time, 50% true and 50% false
+        force_cfg = np.random.choice([True, False], size=batch_size-flow_batch_size, p=[0.8, 0.2])
+        with torch.no_grad():
+            speed_t = self.denoiser(
+                x=x_t[flow_batch_size:],
+                timesteps=t[flow_batch_size:],
+                seed=seed_vectors[flow_batch_size:],
+                at_feat=audio_features[flow_batch_size:],
+                cond_time=d[flow_batch_size:],
+                force_cfg=force_cfg,
+            )
+            
+            d_coef = reshape_coefs(d)
+            x_td = x_t[flow_batch_size:] + d_coef[flow_batch_size:] * speed_t
+            d = d_coef.flatten()
+
+            speed_td = self.denoiser(
+                x=x_td,
+                timesteps=t[flow_batch_size:] + d[flow_batch_size:],
+                seed=seed_vectors[flow_batch_size:],
+                at_feat=audio_features[flow_batch_size:],
+                cond_time=d[flow_batch_size:],
+                force_cfg=force_cfg,
+            )
+            
+            speed_target = (speed_t + speed_td) / 2
+        
+        speed_pred = self.denoiser(
+            x=x_t[flow_batch_size:],
+            timesteps=t[flow_batch_size:],
+            seed=seed_vectors[flow_batch_size:],
+            at_feat=audio_features[flow_batch_size:],
+            cond_time=2 * d[flow_batch_size:],
+            force_cfg=force_cfg,
+        )
+        
+        consistency_loss = F.mse_loss(speed_pred, speed_target, reduction="mean")
+        losses['consistency_loss'] = consistency_loss
+
+        losses['loss'] = sum(losses.values())
+        return losses
+    
+
+    def train_reflow(self, latents, audio_features, x0_noise, seed_vectors) -> Dict[str, torch.Tensor]:
+        """Compute training losses for both flow matching and consistency.
+        
+        Args:
+            condition_dict: Dictionary containing training conditions
+            latents: Target latent vectors
+            
+        Returns:
+            Dictionary containing individual and total losses
+        """
+
+        # Sample timesteps and deltas
+        deltas = 1 / torch.tensor([2 ** i for i in range(1, 8)]).to(latents.device)
+        delta_probs = torch.ones((deltas.shape[0],)).to(latents.device) / deltas.shape[0]
+
+        batch_size = latents.shape[0]
+        flow_batch_size = int(batch_size * 3/4)
+
+        # Sample random coefficients
+        t = sample_beta_distribution(batch_size, alpha=2, beta=1.2).to(latents.device)
+        # t = sample_beta_distribution(batch_size, alpha=2, beta=0.8).to(latents.device)
+        d = deltas[delta_probs.multinomial(batch_size, replacement=True)]
+        d[:flow_batch_size] = 0
+
+        # Prepare inputs
+        t_coef = reshape_coefs(t)
+        x_t = t_coef * latents + (1 - t_coef) * x0_noise
+        t = t_coef.flatten()
+        
+        # Flow matching loss
+        flow_pred = self.denoiser(
+            x=x_t[:flow_batch_size],
+            timesteps=t[:flow_batch_size],
+            seed=seed_vectors[:flow_batch_size],
+            at_feat=audio_features[:flow_batch_size],
+            cond_time=d[:flow_batch_size],
+        )
+        
+        flow_target = latents[:flow_batch_size] - x0_noise[:flow_batch_size]
+        
+        losses = {}
+        flow_loss = (F.mse_loss(flow_target, flow_pred) / t).mean()
+        losses['flow_loss'] = flow_loss
+
+        # Consistency loss computation
+        # Jan 11, perform cfg at the same time, 50% true and 50% false
+        force_cfg = np.random.choice([True, False], size=batch_size-flow_batch_size, p=[0.8, 0.2])
+        with torch.no_grad():
+            speed_t = self.denoiser(
+                x=x_t[flow_batch_size:],
+                timesteps=t[flow_batch_size:],
+                seed=seed_vectors[flow_batch_size:],
+                at_feat=audio_features[flow_batch_size:],
+                cond_time=d[flow_batch_size:],
+                force_cfg=force_cfg,
+            )
+            
+            d_coef = reshape_coefs(d)
+            x_td = x_t[flow_batch_size:] + d_coef[flow_batch_size:] * speed_t
+            d = d_coef.flatten()
+
+            speed_td = self.denoiser(
+                x=x_td,
+                timesteps=t[flow_batch_size:] + d[flow_batch_size:],
+                seed=seed_vectors[flow_batch_size:],
+                at_feat=audio_features[flow_batch_size:],
+                cond_time=d[flow_batch_size:],
+                force_cfg=force_cfg,
+            )
+            
+            speed_target = (speed_t + speed_td) / 2
+        
+        speed_pred = self.denoiser(
+            x=x_t[flow_batch_size:],
+            timesteps=t[flow_batch_size:],
+            seed=seed_vectors[flow_batch_size:],
+            at_feat=audio_features[flow_batch_size:],
+            cond_time=2 * d[flow_batch_size:],
+            force_cfg=force_cfg,
+        )
+        
+        consistency_loss = F.mse_loss(speed_pred, speed_target, reduction="mean")
+        losses['consistency_loss'] = consistency_loss
+
+        losses['loss'] = sum(losses.values())
+        return losses
+
+
+
+    def masked_l2(self, a, b, mask, reduction='mean'):
+        loss = self.smooth_l1_loss(a, b)
+        loss = sum_flat(loss * mask.float())  # gives \sigma_euclidean over unmasked elements
+        n_entries = a.shape[1] * a.shape[2]
+        non_zero_elements = sum_flat(mask) * n_entries
+        mse_loss_val = loss / non_zero_elements
+
+        if reduction == 'mean':
+            mse_loss_val = mse_loss_val.mean()
+        elif reduction == 'sum':
+            mse_loss_val = mse_loss_val.sum()
+        return mse_loss_val
+    
+    def huber_loss(self, a, b, reduction='mean'):
+        data_dim = a.shape[1] * a.shape[2] * a.shape[3]
+        huber_c = 0.00054 * data_dim
+        loss = torch.sum((a - b) ** 2, dim=(1, 2, 3))
+        loss = torch.sqrt(loss + huber_c**2) - huber_c
+        loss = loss / data_dim
+        if reduction == 'mean':
+            loss = loss.mean()
+        elif reduction == 'sum':
+            loss = loss.sum()
+        return loss

@@ -170,6 +170,11 @@ class CustomTrainer(train.BaseTrainer):
             original_shape_t[i, selected_indices] = filtered_t[i]
         return original_shape_t
     
+    def _load_data_for_reflow(self, dict_data):
+        for key in dict_data:
+            dict_data[key] = dict_data[key].cuda()
+        return dict_data
+    
     def _load_data(self, dict_data):
         tar_pose_raw = dict_data["pose"]
         tar_pose = tar_pose_raw[:, :, :165].to(self.rank)
@@ -241,6 +246,41 @@ class CustomTrainer(train.BaseTrainer):
             "style_feature":style_feature,
             "audio_name": audio_name
         }
+    
+    def _g_training(self, loaded_data, use_adv, mode="train", epoch=0):
+        bs, n, j = loaded_data["tar_pose"].shape[0], loaded_data["tar_pose"].shape[1], self.joints 
+            
+        cond_ = {'y':{}}
+        cond_['y']['audio'] = loaded_data['in_audio']
+        cond_['y']['wavlm'] = loaded_data['wavlm']
+        cond_['y']['word'] = loaded_data['in_word']
+        cond_['y']['id'] = loaded_data['tar_id']
+        cond_['y']['seed'] = loaded_data['latent_in'][:,:self.args.pre_frames]
+        cond_['y']['mask'] = (torch.zeros([self.args.batch_size, 1, 1, self.args.pose_length//self.args.vqvae_squeeze_scale]) < 1).cuda()
+        cond_['y']['style_feature'] = loaded_data['style_feature']
+        x0 = loaded_data['latent_in']
+        x0 = x0.permute(0, 2, 1).unsqueeze(2)
+        if epoch > 100:
+            g_loss_final = self.model.module.train_forward(cond_, x0, train_consistency=True)['loss']
+        else:
+            g_loss_final = self.model.module.train_forward(cond_, x0, train_consistency=False)['loss']
+        self.tracker.update_meter("predict_x0_loss", "train", g_loss_final.item())
+
+        if mode == 'train':
+            return g_loss_final
+    
+    def _g_training_reflow(self, loaded_data, mode="train", epoch=0):
+        
+        latents = loaded_data['sample'].squeeze(0)
+        at_feat = loaded_data['at_feat'].squeeze(0)
+        noise = loaded_data['noise'].squeeze(0)
+        seed = loaded_data['seed'].squeeze(0)
+        
+        g_loss_final = self.model.module.train_reflow(latents, at_feat, noise, seed)['loss']
+        self.tracker.update_meter("predict_x0_loss", "train", g_loss_final.item())  
+        
+        if mode == 'train':
+            return g_loss_final
 
 
     def _g_test(self, loaded_data):
@@ -286,6 +326,7 @@ class CustomTrainer(train.BaseTrainer):
         tar_pose_leg = tar_pose[:, :, self.joint_mask_lower.astype(bool)]
         tar_pose_leg = rc.axis_angle_to_matrix(tar_pose_leg.reshape(bs, n, 9, 3))
         tar_pose_leg = rc.matrix_to_rotation_6d(tar_pose_leg).reshape(bs, n, 9*6)
+        
         
         tar_pose_6d = rc.axis_angle_to_matrix(tar_pose.reshape(bs, n, 55, 3))
         tar_pose_6d = rc.matrix_to_rotation_6d(tar_pose_6d).reshape(bs, n, 55*6)
@@ -424,7 +465,240 @@ class CustomTrainer(train.BaseTrainer):
             'tar_trans': tar_trans,
             'rec_exps': rec_exps,
         }
+    
+    def train(self, epoch):
 
+        use_adv = bool(epoch>=self.args.no_adv_epoch)
+        self.model.train()
+        t_start = time.time()
+        self.tracker.reset()
+        for its, batch_data in enumerate(self.train_loader):
+            loaded_data = self._load_data(batch_data)
+            t_data = time.time() - t_start
+    
+            self.opt.zero_grad()
+            g_loss_final = 0
+            g_loss_final += self._g_training(loaded_data, use_adv, 'train', epoch)
+
+            g_loss_final.backward()
+            if self.args.grad_norm != 0: 
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_norm)
+            self.opt.step()
+            
+            mem_cost = torch.cuda.memory_cached() / 1E9
+            lr_g = self.opt.param_groups[0]['lr']
+
+            t_train = time.time() - t_start - t_data
+            t_start = time.time()
+            if its % self.args.log_period == 0:
+                self.train_recording(epoch, its, t_data, t_train, mem_cost, lr_g)   
+            if self.args.debug:
+                if its == 1: 
+                    break
+        self.opt_s.step(epoch)
+
+    def train_reflow(self, epoch):
+        
+        self.model.train()
+        t_start = time.time()
+        self.tracker.reset()
+
+        for its, batch_data in enumerate(self.train_loader):
+            loaded_data = self._load_data_for_reflow(batch_data)
+            t_data = time.time() - t_start
+    
+            self.opt.zero_grad()
+            g_loss_final = 0
+            g_loss_final += self._g_training_reflow(loaded_data, 'train', epoch)
+
+            g_loss_final.backward()
+            if self.args.grad_norm != 0: 
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_norm)
+            self.opt.step()
+            
+            mem_cost = torch.cuda.memory_cached() / 1E9
+            lr_g = self.opt.param_groups[0]['lr']
+
+            t_train = time.time() - t_start - t_data
+            t_start = time.time()
+            if its % self.args.log_period == 0:
+                self.train_recording(epoch, its, t_data, t_train, mem_cost, lr_g)   
+            if self.args.debug:
+                if its == 1: 
+                    break
+        
+        self.opt_s.step(epoch)
+    
+
+    def generate_samples(self, epoch):
+        results_save_path = self.checkpoint_path + f"/{epoch}/"
+        if os.path.exists(results_save_path): 
+            return 0
+        os.makedirs(results_save_path)
+       
+        self.model.eval()
+        with torch.no_grad():
+            for its, batch_data in enumerate(self.train_loader):
+                loaded_data = self._load_data(batch_data)    
+                
+                bs = loaded_data['tar_pose'].shape[0]
+                cond_ = {'y':{}}
+                cond_['y']['audio'] = loaded_data['in_audio']
+                cond_['y']['wavlm'] = loaded_data['wavlm']
+                cond_['y']['word'] = loaded_data['in_word']
+                cond_['y']['id'] = loaded_data['tar_id']
+                cond_['y']['seed'] = loaded_data['latent_in'][:,:self.args.pre_frames]
+                cond_['y']['mask'] = (torch.zeros([self.args.batch_size, 1, 1, self.args.pose_length//self.args.vqvae_squeeze_scale]) < 1).cuda()
+                cond_['y']['style_feature'] = loaded_data['style_feature']
+                x0 = loaded_data['latent_in']
+                x0 = x0.permute(0, 2, 1).unsqueeze(2)
+
+                return_dict = self.model(cond_)
+                sample = return_dict['latents']
+                noise = return_dict['init_noise']
+                at_feat = return_dict['at_feat']
+                seed = return_dict['seed']
+
+                its = its + 5000
+                noise_path = os.path.join(
+                    results_save_path,
+                    f"noise_{its * bs:08d}.pth",
+                )
+                torch.save(noise, noise_path)
+
+                at_feat_path = os.path.join(
+                    results_save_path,
+                    f"at_feat_{its * bs:08d}.pth",
+                )
+                torch.save(at_feat, at_feat_path)
+
+                sample_path = os.path.join(
+                    results_save_path,
+                    f"sample_{its * bs:08d}.pth",
+                )
+                torch.save(sample, sample_path)
+
+                seed_path = os.path.join(
+                    results_save_path,
+                    f"seed_{its * bs:08d}.pth",
+                )
+                torch.save(seed, seed_path)
+
+            for its, batch_data in enumerate(self.test_loader):
+                loaded_data = self._load_data(batch_data)
+
+                bs, n, j = loaded_data["tar_pose"].shape[0], loaded_data["tar_pose"].shape[1], self.joints 
+                tar_pose = loaded_data["tar_pose"]
+                tar_beta = loaded_data["tar_beta"]
+                tar_exps = loaded_data["tar_exps"]
+                tar_contact = loaded_data["tar_contact"]
+                tar_trans = loaded_data["tar_trans"]
+                in_word = loaded_data["in_word"]
+                in_audio = loaded_data["in_audio"]
+                wavlm = loaded_data["wavlm"]
+                in_x0 = loaded_data['latent_in']
+                in_seed = loaded_data['latent_in']
+                
+                remain = n%8
+                if remain != 0:
+                    
+                    tar_pose = tar_pose[:, :-remain, :]
+                    tar_beta = tar_beta[:, :-remain, :]
+                    tar_trans = tar_trans[:, :-remain, :]
+                    in_word = in_word[:, :-remain]
+                    tar_exps = tar_exps[:, :-remain, :]
+                    tar_contact = tar_contact[:, :-remain, :]
+                    in_x0 = in_x0[:, :in_x0.shape[1]-(remain//self.args.vqvae_squeeze_scale), :]
+                    in_seed = in_seed[:, :in_x0.shape[1]-(remain//self.args.vqvae_squeeze_scale), :]
+                    n = n - remain
+
+                tar_pose_jaw = tar_pose[:, :, 66:69]
+                tar_pose_jaw = rc.axis_angle_to_matrix(tar_pose_jaw.reshape(bs, n, 1, 3))
+                tar_pose_jaw = rc.matrix_to_rotation_6d(tar_pose_jaw).reshape(bs, n, 1*6)
+                tar_pose_face = torch.cat([tar_pose_jaw, tar_exps], dim=2)
+
+                tar_pose_hands = tar_pose[:, :, 25*3:55*3]
+                tar_pose_hands = rc.axis_angle_to_matrix(tar_pose_hands.reshape(bs, n, 30, 3))
+                tar_pose_hands = rc.matrix_to_rotation_6d(tar_pose_hands).reshape(bs, n, 30*6)
+
+                tar_pose_upper = tar_pose[:, :, self.joint_mask_upper.astype(bool)]
+                tar_pose_upper = rc.axis_angle_to_matrix(tar_pose_upper.reshape(bs, n, 13, 3))
+                tar_pose_upper = rc.matrix_to_rotation_6d(tar_pose_upper).reshape(bs, n, 13*6)
+
+                tar_pose_leg = tar_pose[:, :, self.joint_mask_lower.astype(bool)]
+                tar_pose_leg = rc.axis_angle_to_matrix(tar_pose_leg.reshape(bs, n, 9, 3))
+                tar_pose_leg = rc.matrix_to_rotation_6d(tar_pose_leg).reshape(bs, n, 9*6)
+                tar_pose_lower = torch.cat([tar_pose_leg, tar_trans, tar_contact], dim=2)
+                
+                tar_pose_6d = rc.axis_angle_to_matrix(tar_pose.reshape(bs, n, 55, 3))
+                tar_pose_6d = rc.matrix_to_rotation_6d(tar_pose_6d).reshape(bs, n, 55*6)
+                latent_all = torch.cat([tar_pose_6d, tar_trans, tar_contact], dim=-1)
+                
+                vqvae_squeeze_scale = self.args.vqvae_squeeze_scale
+                roundt = (n - self.args.pre_frames * vqvae_squeeze_scale) // (self.args.pose_length - self.args.pre_frames * vqvae_squeeze_scale)
+                remain = (n - self.args.pre_frames * vqvae_squeeze_scale) % (self.args.pose_length - self.args.pre_frames * vqvae_squeeze_scale)
+                round_l = self.args.pose_length - self.args.pre_frames * vqvae_squeeze_scale
+                
+
+                for i in range(0, roundt):
+                    in_word_tmp = in_word[:, i*(round_l):(i+1)*(round_l)+self.args.pre_frames * vqvae_squeeze_scale]
+
+                    in_audio_tmp = in_audio[:, i*(16000//30*round_l):(i+1)*(16000//30*round_l)+16000//30*self.args.pre_frames * vqvae_squeeze_scale]
+                    wavlm_tmp = wavlm[:, i*(round_l):(i+1)*(round_l)+self.args.pre_frames * vqvae_squeeze_scale]
+                    in_id_tmp = loaded_data['tar_id'][:, i*(round_l):(i+1)*(round_l)+self.args.pre_frames]
+                    in_seed_tmp = in_seed[:, i*(round_l)//vqvae_squeeze_scale:(i+1)*(round_l)//vqvae_squeeze_scale+self.args.pre_frames]
+                    in_x0_tmp = in_x0[:, i*(round_l)//vqvae_squeeze_scale:(i+1)*(round_l)//vqvae_squeeze_scale+self.args.pre_frames]
+                    mask_val = torch.ones(bs, self.args.pose_length, self.args.pose_dims+3+4).float().cuda()
+                    mask_val[:, :self.args.pre_frames, :] = 0.0
+                    if i == 0:
+                        in_seed_tmp = in_seed_tmp[:, :self.args.pre_frames, :]
+                    else:
+                        in_seed_tmp = last_sample[:, -self.args.pre_frames:, :]
+
+                    cond_ = {'y':{}}
+                    cond_['y']['audio'] = in_audio_tmp
+                    cond_['y']['wavlm'] = wavlm_tmp
+                    cond_['y']['word'] = in_word_tmp
+                    cond_['y']['id'] = in_id_tmp
+                    cond_['y']['seed'] =in_seed_tmp
+                    cond_['y']['mask'] = (torch.zeros([self.args.batch_size, 1, 1, self.args.pose_length]) < 1).cuda()
+                    cond_['y']['style_feature'] = torch.zeros([bs, 512]).cuda()
+
+                    return_dict = self.model(cond_)
+                    sample = return_dict['latents']
+                    noise = return_dict['init_noise']
+                    at_feat = return_dict['at_feat']
+                    seed = return_dict['seed']
+
+
+                    last_sample = sample.squeeze().permute(1,0).unsqueeze(0).clone()
+              
+                    its = its + 10000 + i
+                    noise_path = os.path.join(
+                        results_save_path,
+                        f"noise_{its * bs:08d}.pth",
+                    )
+                    torch.save(noise, noise_path)
+
+                    at_feat_path = os.path.join(
+                        results_save_path,
+                        f"at_feat_{its * bs:08d}.pth",
+                    )
+                    torch.save(at_feat, at_feat_path)
+
+                    sample_path = os.path.join(
+                        results_save_path,
+                        f"sample_{its * bs:08d}.pth",
+                    )
+                    torch.save(sample, sample_path)
+
+                    seed_path = os.path.join(
+                        results_save_path,
+                        f"seed_{its * bs:08d}.pth",
+                    )
+                    torch.save(seed, seed_path)
+            
+    
     def test(self, epoch):
         
         results_save_path = self.checkpoint_path + f"/{epoch}/"
@@ -534,7 +808,7 @@ class CustomTrainer(train.BaseTrainer):
                     onset_bt = self.alignmenter.load_audio(in_audio_eval[:int(self.args.audio_sr / self.args.pose_fps*n)], a_offset, len(in_audio_eval)-a_offset, True)
                     beat_vel = self.alignmenter.load_pose(joints_rec, self.align_mask, n-self.align_mask, 30, True)
                     align += (self.alignmenter.calculate_align(onset_bt, beat_vel, 30) * (n-2*self.align_mask))
-               
+                 
                 tar_pose_np = tar_pose.detach().cpu().numpy()
                 rec_pose_np = rec_pose.detach().cpu().numpy()
                 rec_trans_np = rec_trans.detach().cpu().numpy().reshape(bs*n, 3)
@@ -582,3 +856,116 @@ class CustomTrainer(train.BaseTrainer):
         #data_tools.result2target_vis(self.args.pose_version, results_save_path, results_save_path, self.test_demo, False)
         end_time = time.time() - start_time
         logger.info(f"total inference time: {int(end_time)} s for {int(total_length/self.args.pose_fps)} s motion")
+    
+    def test_loss(self, epoch):
+        results_save_path = self.checkpoint_path + f"/{epoch}/"
+        if os.path.exists(results_save_path): 
+            return 0
+        os.makedirs(results_save_path)
+       
+        self.model.eval()
+        self.smplx.eval()
+        self.eval_copy.eval()
+        with torch.no_grad():
+            for its, batch_data in enumerate(self.train_loader):
+                loaded_data = self._load_data(batch_data)
+
+                bs = loaded_data['tar_pose'].shape[0]
+                cond_ = {'y':{}}
+                cond_['y']['audio'] = loaded_data['in_audio']
+                cond_['y']['wavlm'] = loaded_data['wavlm']
+                cond_['y']['word'] = loaded_data['in_word']
+                cond_['y']['id'] = loaded_data['tar_id']
+                cond_['y']['seed'] = loaded_data['latent_in'][:,:self.args.pre_frames]
+                cond_['y']['mask'] = (torch.zeros([self.args.batch_size, 1, 1, self.args.pose_length//self.args.vqvae_squeeze_scale]) < 1).cuda()
+                cond_['y']['style_feature'] = loaded_data['style_feature']
+                x0 = loaded_data['latent_in']
+                x0 = x0.permute(0, 2, 1).unsqueeze(2)   
+
+                net_out = self.model.module.forward_calculate_loss(cond_, x0, save_path=results_save_path, iter=its)
+                if its > 20:
+                    exit()
+    
+    def test_render(self, epoch):
+
+        import platform
+        if platform.system() == "Linux":
+            os.environ['PYOPENGL_PLATFORM'] = 'egl'
+
+        '''
+        input audio and text, output motion
+        do not calculate loss and metric
+        save video
+        '''
+        results_save_path = self.checkpoint_path + f"/{epoch}/"
+        if os.path.exists(results_save_path): 
+            import shutil
+            shutil.rmtree(results_save_path)
+        os.makedirs(results_save_path)
+        start_time = time.time()
+        total_length = 0
+        self.model.eval()
+        self.smplx.eval()
+        # self.eval_copy.eval()
+        with torch.no_grad():
+            for its, batch_data in enumerate(self.test_loader):
+                loaded_data = self._load_data(batch_data)    
+                net_out = self._g_test(loaded_data)
+                tar_pose = net_out['tar_pose']
+                rec_pose = net_out['rec_pose']
+                tar_exps = net_out['tar_exps']
+                tar_beta = net_out['tar_beta']
+                rec_trans = net_out['rec_trans']
+                tar_trans = net_out['tar_trans']
+                rec_exps = net_out['rec_exps']
+                audio_name = loaded_data['audio_name'][0]
+                
+                bs, n, j = tar_pose.shape[0], tar_pose.shape[1], self.joints
+                if (30/self.args.pose_fps) != 1:
+                    assert 30%self.args.pose_fps == 0
+                    n *= int(30/self.args.pose_fps)
+                    tar_pose = torch.nn.functional.interpolate(tar_pose.permute(0, 2, 1), scale_factor=30/self.args.pose_fps, mode='linear').permute(0,2,1)
+                    rec_pose = torch.nn.functional.interpolate(rec_pose.permute(0, 2, 1), scale_factor=30/self.args.pose_fps, mode='linear').permute(0,2,1)
+                
+
+                rec_pose = rc.rotation_6d_to_matrix(rec_pose.reshape(bs*n, j, 6))
+                rec_pose = rc.matrix_to_rotation_6d(rec_pose).reshape(bs, n, j*6)
+                tar_pose = rc.rotation_6d_to_matrix(tar_pose.reshape(bs*n, j, 6))
+                tar_pose = rc.matrix_to_rotation_6d(tar_pose).reshape(bs, n, j*6)
+
+                rec_pose = rc.rotation_6d_to_matrix(rec_pose.reshape(bs*n, j, 6))
+                rec_pose = rc.matrix_to_axis_angle(rec_pose).reshape(bs*n, j*3)
+                tar_pose = rc.rotation_6d_to_matrix(tar_pose.reshape(bs*n, j, 6))
+                tar_pose = rc.matrix_to_axis_angle(tar_pose).reshape(bs*n, j*3)
+                
+
+                tar_pose_np = tar_pose.detach().cpu().numpy()
+                rec_pose_np = rec_pose.detach().cpu().numpy()
+                rec_trans_np = rec_trans.detach().cpu().numpy().reshape(bs*n, 3)
+                rec_exp_np = rec_exps.detach().cpu().numpy().reshape(bs*n, 100) 
+                tar_exp_np = tar_exps.detach().cpu().numpy().reshape(bs*n, 100)
+                tar_trans_np = tar_trans.detach().cpu().numpy().reshape(bs*n, 3)
+                gt_npz = np.load("./demo/examples/2_scott_0_1_1.npz", allow_pickle=True)
+                
+                file_name = audio_name.split("/")[-1].split(".")[0]
+                results_npz_file_save_path = results_save_path+f"result_{file_name}"+'.npz'
+                np.savez(results_npz_file_save_path,
+                    betas=gt_npz["betas"],
+                    poses=rec_pose_np,
+                    expressions=rec_exp_np,
+                    trans=rec_trans_np,
+                    model='smplx2020',
+                    gender='neutral',
+                    mocap_frame_rate = 30,
+                )
+                total_length += n
+                render_vid_path = other_tools_hf.render_one_sequence_no_gt(
+                    results_npz_file_save_path, 
+                    # results_save_path+"gt_"+test_seq_list.iloc[its]['id']+'.npz', 
+                    results_save_path,
+                    audio_name,
+                    self.args.data_path_1+"smplx_models/",
+                    use_matplotlib = False,
+                    args = self.args,
+                    )
+                
