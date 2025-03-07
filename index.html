@@ -64,7 +64,7 @@
           <h1 class="title is-1 publication-title">GestureLSM: Latent Shortcut based Co-Speech Gesture Generation with Spatial-Temporal Modeling</h1>
           <div class="is-size-5 publication-authors">
             <span class="author-block">
-              Arxiv 2025
+              
             </span>
           </div>
 
@@ -91,19 +91,6 @@
               </span>
 
 
-              <span class="link-block">
-                <a href="./arxiv.pdf"
-                   class="external-link button is-normal is-rounded is-dark">
-                  <span class="icon">
-                      <i class="fas fa-file-pdf"></i>
-                  </span>
-                  <span>Paper.</span>
-                  </a>
-              </span>
-
-            </div>
-
-          </div>
         </div>
       </div>
     </div>
@@ -116,7 +103,7 @@
     <div class="hero-body">
         <img src="./static/images/gesturelsm-teaser.jpg"/>
       <p>
-        <b>We present GestureLSM</b>, a method that explicitly models the body part interactions to achieve smooth overall gesture motions while also capable of real-time generation based on shortcut sampling.
+        <b>GestureLSM</b>. We present Gesture Latent Shortcut Model, a method that generates full-body human gestures from speech with high quality and real-time speed. It explicitly models the body regions interactions, e.g., the interactions between body and hands, to achieve coherent and smooth overall gesture motions.  Besides, it is also capable of real-time generation based on shortcut sampling.
       </p>
     </div>
   </div>
@@ -131,7 +118,7 @@
         <h2 class="title is-3">Abstract</h2>
         <div class="content has-text-justified">
           <p>
-            Controlling human gestures based on speech signals presents a significant challenge in computer vision. While existing works did preliminary studies of generating holistic co-speech gesture from speech, the spatial interaction of each body region during the speech remains barely explored. This leads to wield body part interactions given the speech signal. Furthermore, the slow generation speed limits the construction of real-world digital avatars. To resolve these problems, we propose \textbf{GestureLSM}, a Latent Shortcut based approach for Co-Speech Gesture Generation with spatial-temporal modeling. We tokenize various body regions and explicitly model their interactions with spatial and temporal attention. To achieve real-time gesture generations, we exam the denoising patterns and design an effective time distribution to speed up sampling while improve the generation quality for shortcut model. Extensive quantitative and qualitative experiments demonstrate the effectiveness of GestureLSM, showcasing its potential for various applications in the development of digital humans and embodied agents.
+            Generating full-body human gestures based on speech signals remains challenges on quality and speed. Existing approaches model different body regions such as body, legs and hands separately, which fail to capture the spatial interactions between them and result in unnatural and disjointed movements. Additionally, their autoregressive/diffusion-based pipelines show slow generation speed due to dozens of inference steps. To address these two challenges, we propose <b>GestureLSM</b>, a flow-matching-based approach for Co-Speech Gesture Generation with spatial-temporal modeling. Our method i) explicitly model the interaction of tokenized body regions through spatial and temporal attention, for generating coherent full-body gestures. ii) introduce the flow matching to enable more efficient sampling by explicitly modeling the latent velocity space. To overcome the suboptimal performance of flow matching baseline, we propose latent shortcut learning and beta distribution time stamp sampling during training to enhance gesture synthesis quality and accelerate inference. Combining the spatial-temporal modeling and improved flow matching-based framework, GestureLSM achieves state-of-the-art performance on BEAT2 while significantly reducing inference time compared to existing methods, highlighting its potential for enhancing digital humans and embodied agents in real-world applications.
           </p>
         </div>
       </div>
@@ -144,13 +131,129 @@
 <section class="hero teaser">
   <div class="container is-max-desktop">
     <h2 class="title is-3" style="text-align: center;">Method</h2>
-    <div class="hero-body">
+    <div class="content has-text-centered">
         <img src="./static/images/gesturelsm-pipeline.jpg"/>
-      <p><b>Left</b>: Different Body Region Gesture Representation Encoding with Residual Vector Quantization. <b>Right</b>: We leverage spatial-temporal attention with position encoding to learn the interaction of body regions given speech input.</p>
+      <p>(1) GestureLSM generate full-body gestures from speech and text scripts. From left to right, the concatenated audio and text features are fused into gesture features via cross-attention. The condition fused gesture features are adopted to decode gesture latents with our proposed spatial-temporal decoder. The optimization objective is based on the flow matching. (2) The gesture latents are from pretrained RVQ (Residual Vector Quantization) models. (3) The details of spatial-temporal attention, it integrates with position encoding to learn the interaction of body regions.</p>
         
     </div>
   </div>
 </section>
+
+
+<!-- Video carousel -->
+<section class="hero is-small">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <h2 class="title is-4">Comparison on BEAT2</h2>
+      <!-- <div id="results-carousel" class="carousel results-carousel"> -->
+        <div class="item item-video1">
+          <video poster="" id="video1" autoplay controls muted loop height="100%">
+            <!-- Your video file here -->
+            <source src="static/videos/output-1.mp4"
+            type="video/mp4">
+          </video>
+        </div>
+        <div class="item item-video1">
+          <video poster="" id="video1" autoplay controls muted loop height="100%">
+            <!-- Your video file here -->
+            <source src="static/videos/output-2.mp4"
+            type="video/mp4">
+          </video>
+        </div>
+        
+      <!-- </div> -->
+      <h2 class="content has-text-centered">
+        GestureLSM achieves more natural gesture motions conditioned on speech audio, benefiting from the spatial-temporal modeling based on spatial and temporal attentions. The generated gestures are coherent and smooth,
+        while other works always present temporal jittering, abnormal body parts movements, and disjointed gestures.
+      </h2>
+    </div>
+  </div>
+</section>
+<!-- End video carousel -->
+
+
+
+
+
+<!-- Video carousel -->
+<section class="hero is-small">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3 has-text-centered">Additional Results</h2>
+
+        <div class="content">
+          <div class="columns is-centered">
+            <!-- Left Video -->
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex1.mp4" type="video/mp4">
+              </video>
+            </div>
+            
+            <!-- Left Video -->
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex2.mp4" type="video/mp4">
+              </video>
+            </div>
+          </div>
+
+          <div class="columns is-centered">
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex3.mp4" type="video/mp4">
+              </video>
+            </div>
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex4.mp4" type="video/mp4">
+              </video>
+            </div>
+            
+          </div>
+
+          <div class="columns is-centered">
+            <!-- Left Video -->
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex5.mp4" type="video/mp4">
+              </video>
+            </div>
+            
+            <!-- Middle Video -->
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex6.mp4" type="video/mp4">
+              </video>
+            </div>
+          </div>
+
+
+          <div class="columns is-centered">
+            <!-- Left Video -->
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex7.mp4" type="video/mp4">
+              </video>
+            </div>
+            
+            <!-- Middle Video -->
+            <div class="column is-half has-text-centered">
+              <video poster="" autoplay controls muted loop height="100%">
+                <source src="./static/videos/ex8.mp4" type="video/mp4">
+              </video>
+            </div>
+          </div>
+
+
+
+        </div>
+        <h2 class="content has-text-centered">
+          GestureLSM can generate various gestures with different body regions and motions, showcasing its potential for various applications in the development of digital humans and embodied agents.
+    </div>
+  </div>
+</section>
+<!-- End video carousel -->
 
 
 <section class="section" id="BibTeX">

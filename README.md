@@ -55,6 +55,24 @@ python test.py -c configs/diffuser_rvqvae_128.yaml
 
 ```
 
+## Train RVQ-VAEs
+> Require download dataset 
+```
+bash train_rvq.sh
+```
+
+## Train Generator
+> Require download dataset 
+```
+
+# Train the shortcut model
+python train.py -c configs/shortcut_rvqvae_128.yaml
+
+# Train the diffusion model
+python train.py -c configs/diffuser_rvqvae_128.yaml
+```
+
+
 ## Demo
 ```
 python demo.py -c configs/shortcut_rvqvae_128_hf.yaml
