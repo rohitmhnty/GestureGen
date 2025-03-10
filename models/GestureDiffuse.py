@@ -135,3 +135,90 @@ class GestureDiffusion(torch.nn.Module):
             latents = self.scheduler.step(model_output, t, latents, **extra_step_kwargs).prev_sample
         return_dict['latents'] = latents
         return return_dict
+    
+    def _diffusion_process(self, 
+            latents: torch.Tensor, 
+            audio_feat: torch.Tensor, 
+            id: torch.Tensor, 
+            seed: torch.Tensor, 
+            mask: torch.Tensor, 
+            style_feature: torch.Tensor
+        ) -> dict:
+
+        # [batch_size, n_frame, latent_dim]
+        noise = torch.randn_like(latents)
+        bsz = latents.shape[0]
+
+        
+        timesteps = torch.randint(
+            0,
+            self.scheduler.config.num_train_timesteps,
+            (bsz,),
+            device=latents.device
+        )
+        
+        timesteps = timesteps.long()
+        noisy_latents = self.scheduler.add_noise(latents.clone(), noise, timesteps)
+
+        model_output = self.denoiser(
+            x=noisy_latents,
+            timesteps=timesteps,
+            seed=seed,
+            at_feat=audio_feat
+        )
+
+        latents_pred, noise_pred = self.predicted_origin(model_output, timesteps, noisy_latents)
+
+        n_set = {
+            "noise": noise,
+            "noise_pred": noise_pred,
+            "sample_pred": latents_pred,
+            "sample_gt": latents,
+        }
+        return n_set
+    
+    def train_forward(self, cond_: dict, x0: torch.Tensor) -> dict:
+        audio = cond_['y']['audio']
+        raw_audio = cond_['y']['wavlm']
+        word = cond_['y']['word']
+        id = cond_['y']['id']
+        seed = cond_['y']['seed']
+        mask = cond_['y']['mask']
+        style_feature = cond_['y']['style_feature']
+    
+        audio_feat = self.modality_encoder(audio, word, raw_audio)
+        n_set = self._diffusion_process(x0, audio_feat, id, seed, mask, style_feature)
+
+        loss_dict = dict()
+
+        # Diffusion loss
+        if self.scheduler.config.prediction_type == "epsilon":
+            model_pred, target = n_set['noise_pred'], n_set['noise']
+        elif self.scheduler.config.prediction_type == "sample":
+            model_pred, target = n_set['sample_pred'], n_set['sample_gt']
+        else:
+            raise ValueError(f"Invalid prediction_type {self.scheduler.config.prediction_type}.")
+
+
+        # mse loss
+        diff_loss = self.masked_l2(target, model_pred, mask)
+
+        loss_dict['diff_loss'] = diff_loss
+
+        total_loss = sum(loss_dict.values())
+        loss_dict['loss'] = total_loss
+        return loss_dict
+
+
+    def masked_l2(self, a, b, mask, reduction='mean'):
+        loss = self.smooth_l1_loss(a, b)
+        loss = sum_flat(loss * mask.float())  # gives \sigma_euclidean over unmasked elements
+        n_entries = a.shape[1] * a.shape[2]
+        non_zero_elements = sum_flat(mask) * n_entries
+        mse_loss_val = loss / non_zero_elements
+
+        if reduction == 'mean':
+            mse_loss_val = mse_loss_val.mean()
+        elif reduction == 'sum':
+            mse_loss_val = mse_loss_val.sum()
+        return mse_loss_val

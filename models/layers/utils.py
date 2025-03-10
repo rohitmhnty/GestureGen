@@ -86,9 +86,8 @@ class TimestepEmbedder(nn.Module):
 
 
 class InputProcess(nn.Module):
-    def __init__(self, data_rep, input_feats, latent_dim):
+    def __init__(self, input_feats, latent_dim):
         super().__init__()
-        self.data_rep = data_rep
         self.input_feats = input_feats
         self.latent_dim = latent_dim
         self.poseEmbedding = nn.Linear(self.input_feats, self.latent_dim)
@@ -101,19 +100,16 @@ class InputProcess(nn.Module):
 
 
 class OutputProcess(nn.Module):
-    def __init__(self, data_rep, input_feats, latent_dim, njoints, nfeats):
+    def __init__(self, input_feats, latent_dim):
         super().__init__()
-        self.data_rep = data_rep
         self.input_feats = input_feats
         self.latent_dim = latent_dim
-        self.njoints = njoints
-        self.nfeats = nfeats
         self.poseFinal = nn.Linear(self.latent_dim, self.input_feats)
 
     def forward(self, output):
         bs, n_joints, nframes, d = output.shape
         output = self.poseFinal(output)
-        output = output.permute(0, 1, 3, 2)  # [bs, njoints, nfeats, nframes]
+        output = output.permute(0, 1, 3, 2)
         
         output = output.reshape(bs, n_joints * 128, 1, nframes)
         return output

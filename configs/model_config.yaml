@@ -7,9 +7,7 @@ model:
   denoiser:
     target: models.denoiser.GestureDenoiser
     params:
-      njoints: 128
-      data_rep: "rot6d"
-      nfeats: 1
+      input_dim: 128
       latent_dim: 256
       ff_size: 1024
       num_layers: 8
@@ -19,6 +17,7 @@ model:
       n_seed: 8
       flip_sin_to_cos: True
       freq_shift: 0.0
+      
 
 
   modality_encoder:

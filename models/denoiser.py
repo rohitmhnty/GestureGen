@@ -10,9 +10,7 @@ from .layers.transformer import SpatialTemporalBlock, CrossAttentionBlock
 
 class GestureDenoiser(nn.Module):
     def __init__(self,
-        njoints=128,
-        data_rep='rot6d',
-        nfeats=1,
+        input_dim=128,
         latent_dim=256,
         ff_size=1024,
         num_layers=8,
@@ -28,16 +26,13 @@ class GestureDenoiser(nn.Module):
     ):
         super().__init__()
         
-        self.njoints = njoints
-        self.nfeats = nfeats
-        self.data_rep = data_rep
+        self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.ff_size = ff_size
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.dropout = dropout
         self.activation = activation
-        self.input_feats = self.njoints * self.nfeats
         self.use_exp = use_exp
         self.joint_num = 3 if not self.use_exp else 4
         
@@ -54,12 +49,12 @@ class GestureDenoiser(nn.Module):
         self.embed_timestep = TimestepEmbedder(self.latent_dim, self.sequence_pos_encoder)
         self.n_seed = n_seed
         
-        self.embed_text = nn.Linear(self.input_feats*self.joint_num*4, self.latent_dim)
+        self.embed_text = nn.Linear(self.input_dim*self.joint_num*4, self.latent_dim)
 
-        self.output_process = OutputProcess(self.data_rep, self.input_feats, self.latent_dim, self.njoints,self.nfeats)
+        self.output_process = OutputProcess(self.input_dim, self.latent_dim)
 
         self.rel_pos = SinusoidalEmbeddings(self.latent_dim)
-        self.input_process = InputProcess(self.data_rep, self.input_feats , self.latent_dim)
+        self.input_process = InputProcess(self.input_dim , self.latent_dim)
         self.input_process2 = nn.Linear(self.latent_dim*2, self.latent_dim)
         
         self.time_embedding = TimestepEmbedding(self.latent_dim, self.latent_dim, self.activation, cond_proj_dim=cond_proj_dim, zero_init_cond=True)
@@ -129,8 +124,8 @@ class GestureDenoiser(nn.Module):
             seed = torch.cat([seed] * 2, dim=0)
             at_feat = torch.cat([at_feat] * 2, dim=0)
        
-        bs, njoints, nfeats, nframes = x.shape      # 300 ,1141, 1, 88
-
+        bs, njoints, nfeats, nframes = x.shape      # [bs, 3, 128, 32]
+        
         # need to be an arrary, especially when bs is 1
         timesteps = timesteps.expand(bs).clone()
         time_emb = self.time_proj(timesteps)

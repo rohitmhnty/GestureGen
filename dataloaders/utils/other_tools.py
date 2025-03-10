@@ -11,7 +11,7 @@ from collections import OrderedDict
 import matplotlib.pyplot as plt
 import pickle
 import time
-
+import lmdb
 import numpy as np
 
 def adjust_array(x, k):
@@ -674,3 +674,69 @@ class AverageMeter(object):
     def __str__(self):
         fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
         return fmtstr.format(**self.__dict__)
+
+
+
+class MultiLMDBManager:
+    def __init__(self, base_dir, max_db_size=10*1024*1024*1024):  # 10GB default size
+        self.base_dir = base_dir
+        self.max_db_size = max_db_size
+        self.current_db_size = 0
+        self.current_db_idx = 0
+        self.current_lmdb_env = None
+        self.sample_to_db_mapping = {}
+        self.sample_counter = 0
+        self.db_paths = []
+        
+    def get_new_lmdb_path(self):
+        db_path = os.path.join(self.base_dir, f"db_{self.current_db_idx:03d}")
+        self.db_paths.append(db_path)
+        return db_path
+        
+    def init_new_db(self):
+        if self.current_lmdb_env is not None:
+            self.current_lmdb_env.sync()
+            self.current_lmdb_env.close()
+        
+        new_db_path = self.get_new_lmdb_path()
+        self.current_lmdb_env = lmdb.open(new_db_path, map_size=self.max_db_size)
+        self.current_db_size = 0
+        self.current_db_idx += 1
+        return self.current_lmdb_env
+        
+    def add_sample(self, sample_data):
+        if self.current_lmdb_env is None:
+            self.init_new_db()
+            
+        v = pickle.dumps(sample_data)
+        sample_size = len(v)
+        
+        try:
+            sample_key = "{:008d}".format(self.sample_counter).encode("ascii")
+            with self.current_lmdb_env.begin(write=True) as txn:
+                txn.put(sample_key, v)
+            self.sample_to_db_mapping[self.sample_counter] = self.current_db_idx - 1
+            
+        except lmdb.MapFullError:
+            self.init_new_db()
+            sample_key = "{:008d}".format(self.sample_counter).encode("ascii")
+            with self.current_lmdb_env.begin(write=True) as txn:
+                txn.put(sample_key, v)
+            self.sample_to_db_mapping[self.sample_counter] = self.current_db_idx - 1
+            
+        self.current_db_size += sample_size
+        self.sample_counter += 1
+        
+    def save_mapping(self):
+        mapping_path = os.path.join(self.base_dir, "sample_db_mapping.pkl")
+        with open(mapping_path, 'wb') as f:
+            pickle.dump({
+                'mapping': self.sample_to_db_mapping,
+                'db_paths': self.db_paths
+            }, f)
+            
+    def close(self):
+        if self.current_lmdb_env is not None:
+            self.current_lmdb_env.sync()
+            self.current_lmdb_env.close()
+        self.save_mapping()
