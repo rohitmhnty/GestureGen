@@ -65,8 +65,10 @@ class CustomDataset(Dataset):
         
         self.ori_joint_list = joints_list[self.args.ori_joints]
         self.tar_joint_list = joints_list[self.args.tar_joints]
-        
-        
+
+        if self.args.word_rep is not None:
+            with open(f"{self.args.data_path}weights/vocab.pkl", 'rb') as f:
+                self.lang_model = pickle.load(f)
         
     def _init_joint_masks(self):
         """Initialize joint masks based on pose representation."""
@@ -260,7 +262,7 @@ class CustomDataset(Dataset):
         # Process word data if needed
         if self.args.word_rep is not None:
             word_file = f"{self.data_dir}{self.args.word_rep}/{f_name}.TextGrid"
-            data = process_word_data(self.data_dir, word_file, self.args, data, f_name, self.selected_file)
+            data = process_word_data(self.data_dir, word_file, self.args, data, f_name, self.selected_file, self.lang_model)
             if data is None:
                 return None
         

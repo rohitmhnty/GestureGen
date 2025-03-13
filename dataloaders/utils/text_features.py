@@ -4,7 +4,7 @@ import os
 from transformers import AutoTokenizer, BertModel
 from loguru import logger
 
-def process_word_data(data_dir, word_file, args, data, f_name, selected_file):
+def process_word_data(data_dir, word_file, args, data, f_name, selected_file, lang_model):
     """Process word/text data with support for different encoders."""
     logger.info(f"# ---- Building cache for Word {f_name} ---- #")
 
@@ -25,7 +25,7 @@ def process_word_data(data_dir, word_file, args, data, f_name, selected_file):
     if args.t_pre_encoder == "bert":
         word_data = process_bert_encoding(tgrid, f_name, args)
     else:
-        word_data = process_basic_encoding(tgrid, data, args)
+        word_data = process_basic_encoding(tgrid, data, args, lang_model)
 
     data['word'] = np.array(word_data)
     os.makedirs(os.path.dirname(word_save_path), exist_ok=True)
@@ -110,7 +110,7 @@ def get_word_offsets(word_list):
         
     return offsets
 
-def process_basic_encoding(tgrid, data, args):
+def process_basic_encoding(tgrid, data, args, lang_model):
     """Process basic word encoding."""
     word_data = []
     for i in range(data['pose'].shape[0]):
@@ -120,13 +120,13 @@ def process_basic_encoding(tgrid, data, args):
         for word in tgrid[0]:
             if word.minTime <= current_time <= word.maxTime:
                 if word.mark == " ":
-                    word_data.append(args.lang_model.PAD_token)
+                    word_data.append(lang_model.PAD_token)
                 else:
-                    word_data.append(args.lang_model.get_word_index(word.mark))
+                    word_data.append(lang_model.get_word_index(word.mark))
                 found_word = True
                 break
                 
         if not found_word:
-            word_data.append(args.lang_model.UNK_token)
+            word_data.append(lang_model.UNK_token)
             
     return word_data
