@@ -136,7 +136,8 @@ class GestureDenoiser(nn.Module):
             cond_emb = self.cond_proj(cond_time)
             cond_emb = cond_emb.to(dtype=x.dtype)
             emb_t = self.time_embedding(time_emb, cond_emb)
-        emb_t = self.time_embedding(time_emb)
+        else:
+            emb_t = self.time_embedding(time_emb)
         
         if self.n_seed != 0:
             embed_text = self.embed_text(seed.reshape(bs, -1))
