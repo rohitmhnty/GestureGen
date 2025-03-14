@@ -572,3 +572,56 @@ class CustomTrainer(train.BaseTrainer):
         #data_tools.result2target_vis(self.args.pose_version, results_save_path, results_save_path, self.test_demo, False)
         end_time = time.time() - start_time
         logger.info(f"total inference time: {int(end_time)} s for {int(total_length/self.args.pose_fps)} s motion")
+    
+    def train(self, epoch):
+
+        use_adv = bool(epoch>=self.args.no_adv_epoch)
+        self.model.train()
+        t_start = time.time()
+        self.tracker.reset()
+        for its, batch_data in enumerate(self.train_loader):
+            loaded_data = self._load_data(batch_data)
+            t_data = time.time() - t_start
+    
+            self.opt.zero_grad()
+            g_loss_final = 0
+            g_loss_final += self._g_training(loaded_data, use_adv, 'train', epoch)
+
+            g_loss_final.backward()
+            if self.args.grad_norm != 0: 
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_norm)
+            self.opt.step()
+            
+            mem_cost = torch.cuda.memory_cached() / 1E9
+            lr_g = self.opt.param_groups[0]['lr']
+
+            t_train = time.time() - t_start - t_data
+            t_start = time.time()
+            if its % self.args.log_period == 0:
+                self.train_recording(epoch, its, t_data, t_train, mem_cost, lr_g)   
+            if self.args.debug:
+                if its == 1: 
+                    break
+        self.opt_s.step(epoch)
+    
+    def _g_training(self, loaded_data, use_adv, mode="train", epoch=0):
+        bs, n, j = loaded_data["tar_pose"].shape[0], loaded_data["tar_pose"].shape[1], self.joints 
+            
+        cond_ = {'y':{}}
+        cond_['y']['audio'] = loaded_data['in_audio']
+        cond_['y']['wavlm'] = loaded_data['wavlm']
+        cond_['y']['word'] = loaded_data['in_word']
+        cond_['y']['id'] = loaded_data['tar_id']
+        cond_['y']['seed'] = loaded_data['latent_in'][:,:self.args.pre_frames]
+        cond_['y']['mask'] = (torch.zeros([self.args.batch_size, 1, 1, self.args.pose_length//self.args.vqvae_squeeze_scale]) < 1).cuda()
+        cond_['y']['style_feature'] = loaded_data['style_feature']
+        x0 = loaded_data['latent_in']
+        x0 = x0.permute(0, 2, 1).unsqueeze(2)
+        if epoch > 100:
+            g_loss_final = self.model.module.train_forward(cond_, x0)['loss']
+        else:
+            g_loss_final = self.model.module.train_forward(cond_, x0)['loss']
+        self.tracker.update_meter("predict_x0_loss", "train", g_loss_final.item())
+
+        if mode == 'train':
+            return g_loss_final
