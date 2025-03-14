@@ -26,8 +26,12 @@ bash demo/install_mfa.sh
 
 ## Download Model
 ```
+# Option 1: From Google Drive
 # Download the pretrained model (Shortcut) + (Shortcut-reflow) + (Diffusion) + (RVQ-VAEs)
 gdown https://drive.google.com/drive/folders/1OfYWWJbaXal6q7LttQlYKWAy0KTwkPRw?usp=drive_link -O ./ckpt --folder
+
+# Option 2: From Huggingface Hub
+huggingface-cli download https://huggingface.co/pliu23/GestureLSM --local-dir ./ckpt
 
 # Download the SMPL model
 gdown https://drive.google.com/drive/folders/1MCks7CMNBtAzU2XihYezNmiGT_6pWex8?usp=drive_link -O ./datasets/hub --folder
@@ -91,7 +95,7 @@ If you find our code or paper helps, please consider citing:
 ```bibtex
 @misc{liu2025gesturelsmlatentshortcutbased,
       title={GestureLSM: Latent Shortcut based Co-Speech Gesture Generation with Spatial-Temporal Modeling}, 
-      author={Pinxin Liu and Luchuan Song and Junhua Huang and Chenliang Xu},
+      author={Pinxin Liu and Luchuan Song and Junhua Huang and Haiyang Liu and Chenliang Xu},
       year={2025},
       eprint={2501.18898},
       archivePrefix={arXiv},
