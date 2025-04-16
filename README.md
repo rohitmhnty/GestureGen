@@ -24,7 +24,22 @@ pip install -r requirements.txt
 bash demo/install_mfa.sh
 ```
 
-## Download Model
+## Results
+
+![Beat Results](beat-new.png)
+
+## Note
+- The statistics reported in the paper is based on 1-speaker with speaker-id of 2, 'scott' in order to be consistent with the previous SOTA methods.
+- The pretrained model previously provided is trained on 1-speaker. (RVQ-VAEs, Diffusion, Shortcut, Shortcut-reflow)
+- If you want to use all-speaker, please modify the config files to include all speaker ids.
+- April 16, 2025: update the pretrained model to include all speakers. (RVQ-VAEs, Shortcut)
+- I did not do hyperparameter tuning for all-speaker, but just use the same setting as 1-speaker.
+
+
+
+
+
+## Download Model (1-speaker and all-speaker)
 ```
 # Option 1: From Google Drive
 # Download the pretrained model (Shortcut) + (Shortcut-reflow) + (Diffusion) + (RVQ-VAEs)
@@ -45,7 +60,7 @@ gdown https://drive.google.com/drive/folders/1MCks7CMNBtAzU2XihYezNmiGT_6pWex8?u
 bash preprocess/bash_raw_cospeech_download.sh
 ```
 
-## Eval
+## Eval (1-speaker)
 > Require download dataset 
 ```
 # Evaluate the pretrained shortcut model (20 steps)
@@ -59,13 +74,13 @@ python test.py -c configs/diffuser_rvqvae_128.yaml
 
 ```
 
-## Train RVQ-VAEs
+## Train RVQ-VAEs (1-speaker)
 > Require download dataset 
 ```
 bash train_rvq.sh
 ```
 
-## Train Generator
+## Train Generator (1-speaker)
 > Require download dataset 
 ```
 
@@ -77,7 +92,7 @@ python train.py -c configs/diffuser_rvqvae_128.yaml
 ```
 
 
-## Demo
+## Demo (1-speaker)
 ```
 python demo.py -c configs/shortcut_rvqvae_128_hf.yaml
 ```
