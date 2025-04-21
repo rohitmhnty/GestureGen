@@ -24,7 +24,26 @@ pip install -r requirements.txt
 bash demo/install_mfa.sh
 ```
 
-## Download Model
+## Results
+
+![Beat Results](beat-new.png)
+
+This table shows the results of 1-speaker and all-speaker comparisons. RAG-Gesture refers to [**Retrieving Semantics from the Deep: an RAG Solution for Gesture Synthesis**](https://arxiv.org/abs/2412.06786), accepted by CVPR 2025.
+
+## Note
+- The statistics reported in the paper is based on 1-speaker with speaker-id of 2, 'scott' in order to be consistent with the previous SOTA methods.
+- The pretrained model previously provided is trained on 1-speaker. (RVQ-VAEs, Diffusion, Shortcut, Shortcut-reflow)
+- If you want to use all-speaker, please modify the config files to include all speaker ids.
+- April 16, 2025: update the pretrained model to include all speakers. (RVQ-VAEs, Shortcut)
+- I did not do hyperparameter tuning for all-speaker, but just use the same setting as 1-speaker.
+- You can add the speaker embedding if you want to have a better performance for all-speakers. I did not add it to make the code more aligned with the current 1-speaker setting and make the model capable of generating gesture for a novel speaker.
+- No gesture type information is used in the current version. The reason is that for a novel speaker and novel setting, you never know the gesture type. As a result, including this information is not realistic for real-world applications. However, if you just want to see a even better FGD, you can try to add this information.
+
+
+
+
+
+## Download Model (1-speaker and all-speaker)
 ```
 # Option 1: From Google Drive
 # Download the pretrained model (Shortcut) + (Shortcut-reflow) + (Diffusion) + (RVQ-VAEs)
@@ -45,7 +64,7 @@ gdown https://drive.google.com/drive/folders/1MCks7CMNBtAzU2XihYezNmiGT_6pWex8?u
 bash preprocess/bash_raw_cospeech_download.sh
 ```
 
-## Eval
+## Eval (1-speaker)
 > Require download dataset 
 ```
 # Evaluate the pretrained shortcut model (20 steps)
@@ -59,13 +78,13 @@ python test.py -c configs/diffuser_rvqvae_128.yaml
 
 ```
 
-## Train RVQ-VAEs
+## Train RVQ-VAEs (1-speaker)
 > Require download dataset 
 ```
 bash train_rvq.sh
 ```
 
-## Train Generator
+## Train Generator (1-speaker)
 > Require download dataset 
 ```
 
@@ -77,7 +96,7 @@ python train.py -c configs/diffuser_rvqvae_128.yaml
 ```
 
 
-## Demo
+## Demo (1-speaker)
 ```
 python demo.py -c configs/shortcut_rvqvae_128_hf.yaml
 ```
