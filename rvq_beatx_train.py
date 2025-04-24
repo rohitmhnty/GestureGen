@@ -143,7 +143,7 @@ logger.info(json.dumps(vars(args), indent=4, sort_keys=True))
 from dataloaders.mix_sep import CustomDataset
 from utils.config import parse_args
 
-dataset_args = parse_args("configs/beat2_rvqvae.yaml")
+dataset_args, _ = parse_args("configs/beat2_rvqvae.yaml")
 build_cache = False
 
 trainSet = CustomDataset(dataset_args,"train",build_cache = build_cache)
